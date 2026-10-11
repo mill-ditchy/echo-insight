@@ -43,6 +43,8 @@ def needs_ai_summary(article: dict) -> bool:
     platform = str(article.get("platform", ""))
     if platform == "bilibili":
         return True
+    if platform == "xiaohongshu":
+        return article.get("content_type") == "image_note"
     return (
         platform == "zhihu"
         and str(article.get("content_type", "")).lower() in ZHIHU_AI_CONTENT_TYPES
@@ -98,7 +100,17 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
             continue
 
         try:
-            articles = select_recent_unique_articles(fetcher.fetch(uid))
+            from .platforms.xiaohongshu import XiaohongshuFetcher
+            if isinstance(fetcher, XiaohongshuFetcher):
+                from .state_manager import load_state
+                saved = load_state().get("sources", {}).get(f"{platform}:{uid}")
+                articles = fetcher.fetch_incremental(uid, saved.get("seen_ids", [])) if saved is not None else fetcher.fetch(uid)
+                from .platforms.xiaohongshu_status import get_source_status
+                warning = get_source_status(uid).get("scan_warning", "")
+                if warning:
+                    errors.append(f"{name} 补抓范围有限: {warning}")
+            else:
+                articles = select_recent_unique_articles(fetcher.fetch(uid))
         except Exception as e:
             message = f"{name} 抓取失败: {e}"
             print(f"  [错误] {message}")
@@ -115,6 +127,8 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
         count = len(articles)
         if count:
             print(f"  [完成] 抓到 {count} 篇")
+        elif platform == "xiaohongshu":
+            print("  [完成] 已读取主页，没有新图文")
         else:
             message = f"{name} 未抓到内容"
             print(f"  [警告] {message}")
@@ -135,6 +149,10 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
 
     if article.get("platform") == "zhihu":
         _enrich_zhihu_article(article, progress_callback=progress_callback)
+        return
+    if article.get("platform") == "xiaohongshu":
+        from .processors.xiaohongshu_summary import enrich_note
+        enrich_note(article, progress_callback=progress_callback, use_cache=use_cache)
         return
 
     current_id = str(article.get("article_id") or article.get("video_id") or "")
@@ -483,12 +501,17 @@ def format_as_markdown(articles: list[dict]) -> str:
                         lines.append(f"**AI内容总结（{item.get('ai_model', '')}）**")
                         lines.append("")
                         lines.append(item.get("ai_summary", ""))
+                        if item.get("platform") == "xiaohongshu":
+                            lines.append("")
+                            lines.append(f"图文范围：已读取 {item.get('ai_frame_count', 0)}/{item.get('image_count', 0)} 张图片。")
+                            if item.get("ai_analysis_warnings"):
+                                lines.append("读取限制：" + "；".join(item["ai_analysis_warnings"]))
                     elif item.get("platform") == "zhihu":
                         lines.append(f"- 内容摘要：{item.get('summary', '') or '暂无摘要'}")
                     elif item.get("ai_status") == "error":
                         lines.append("- AI总结：生成失败，请查看终端错误信息")
                     else:
-                        lines.append("- AI总结：正在解析视频并生成简报")
+                        lines.append("- AI总结：正在阅读正文与图片" if item.get("platform") == "xiaohongshu" else "- AI总结：正在解析视频并生成简报")
                     lines.append("")
 
     return "\n".join(lines)

@@ -9,6 +9,7 @@ from .bilibili import BilibiliFetcher
 from .rsshub import RsshubFetcher
 from .rss import RssFetcher
 from .zhihu import ZhihuFetcher
+from .xiaohongshu import XiaohongshuFetcher
 
 # ======================================================================
 # 注册表：platform_key → (fetcher实例, 中文标签, 默认分类, uid提示语, uid示例, 备注)
@@ -47,12 +48,12 @@ PLATFORMS = {
         "note": "需要 RSSHub",
     },
     "xiaohongshu": {
-        "fetcher": RsshubFetcher("/xiaohongshu/user/{uid}"),
+        "fetcher": XiaohongshuFetcher(),
         "label": "小红书",
         "category": "小红书",
         "uid_prompt": "输入小红书用户 ID（在个人主页网址 https://www.xiaohongshu.com/user/profile/ 后面那串）：",
         "uid_example": "5e5b5a5a0000000001000b5b",
-        "note": "需要 RSSHub，防爬严格",
+        "note": "读取关注博主的公开图文笔记，建议先在账号管理登录",
     },
     "zhihu": {
         "fetcher": ZhihuFetcher(),

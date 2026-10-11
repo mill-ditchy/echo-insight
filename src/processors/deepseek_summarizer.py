@@ -57,6 +57,9 @@ class SummaryResult:
     evidence_file: str = ""
     analysis_warnings: list[str] = field(default_factory=list)
     fallback_reason: str = ""
+    note_reading_mode: str = ""
+    note_evidence: list[dict] = field(default_factory=list)
+    image_numbers: list[int] = field(default_factory=list)
 
     @property
     def cache_path(self) -> Path:
@@ -85,6 +88,9 @@ class SummaryResult:
             evidence_file=data.get("evidence_file", ""),
             analysis_warnings=data.get("analysis_warnings", []),
             fallback_reason=data.get("fallback_reason", ""),
+            note_reading_mode=data.get("note_reading_mode", ""),
+            note_evidence=data.get("note_evidence", []),
+            image_numbers=data.get("image_numbers", []),
         )
 
 

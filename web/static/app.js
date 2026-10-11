@@ -95,7 +95,44 @@ function updateKey(item) {
   return `${item.platform || ""}:${item.article_id || ""}`;
 }
 
+function noteImageUrl(item, index) {
+  if (item.platform !== "xiaohongshu" || !/^xhs_[a-f0-9]{24}$/.test(item.article_id || "")) return "";
+  return `/api/notes/${encodeURIComponent(item.article_id)}/images/${index}`;
+}
+
+const noteImageCache = new Map();
+let noteImageObserver;
+function loadNoteImages(container) {
+  if (!container?.querySelectorAll) return;
+  const load = async (element) => {
+    const endpoint = element.dataset.noteImage;
+    if (!endpoint || element.dataset.loading) return;
+    element.dataset.loading = "1";
+    try {
+      if (!noteImageCache.has(endpoint)) noteImageCache.set(endpoint, fetch(endpoint, {headers: {"X-Cyber-Request": "1"}})
+        .then(response => { if (!response.ok) throw new Error("图片读取失败"); return response.blob(); })
+        .then(blob => URL.createObjectURL(blob)));
+      element.src = await noteImageCache.get(endpoint);
+    } catch (_error) {
+      noteImageCache.delete(endpoint);
+      element.alt = "图片未能读取，请打开原笔记查看";
+      element.title = element.alt;
+    }
+  };
+  if (typeof IntersectionObserver !== "undefined" && !noteImageObserver) noteImageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) { noteImageObserver.unobserve(entry.target); load(entry.target); }
+  }, {rootMargin: "150px"});
+  container.querySelectorAll('[data-note-image]').forEach(element => noteImageObserver ? noteImageObserver.observe(element) : load(element));
+}
+
 function summaryText(item) {
+  if (item.platform === "xiaohongshu") {
+    if (item.ai_summary) return normalizeDisplaySummary(item.ai_summary);
+    if (item.ai_status === "error") return `图文简报生成失败：${item.ai_error || "请重试"}`;
+    if (item.detail_status === "preview_only") return item.fetch_warning || "目前只取得标题和封面，请登录后重试读取正文。";
+    const labels = {note_reading: "正在重新读取笔记正文与图片…", note_images: "正在读取笔记图片…", note_ocr: "正在识别图片文字…", note_batches: "正在按顺序分批分析图片…", summarizing: "正在结合正文与图片生成简报…"};
+    return labels[item.ai_stage] || "等待阅读正文与图片，生成图文简报…";
+  }
   const stageLabels = {
     waiting: "等待处理：即将解析视频并生成AI简报…",
     subtitle: "正在读取视频字幕…",
@@ -127,20 +164,22 @@ function updateCard(item) {
   else if (item.ai_summary) analysisLabel = "纯文字";
   if (item.ai_segment_count) analysisLabel = `${item.ai_input_mode === "video" ? "采样视频" : "分段画面"} · ${item.ai_segment_count}段 · ${item.ai_frame_count || 0}帧`;
   if (item.ai_completeness === "partial") analysisLabel += " · 分析不完整";
-  const analysisNote = [item.visual_error, ...(item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
+  if (item.platform === "xiaohongshu" && item.ai_summary) analysisLabel = `${item.ai_note_reading_mode === "full" ? "完整模式" : "快速模式"} · ${item.ai_analysis_mode === "note_visual" ? "图文理解" : "正文与图片文字"} · 已读 ${item.ai_frame_count || 0}/${item.image_count || 0} 张${item.ai_completeness === "partial" ? " · 读取不完整" : ""}`;
+  const analysisNote = [item.fetch_warning, item.visual_error, ...(item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
-  const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在视觉分析…" : "重新视觉分析"}</button>` : "";
+  const reanalyzeButton = item.platform === "xiaohongshu" ? noteAnalysisButtons(item) : item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
   const summaryToggle = String(summary).length > 180 ? `<button class="text-button summary-toggle">展开简报</button>` : "";
-  const originalLabel = item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
+  const originalLabel = item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
   const originalUrl = safeExternalUrl(item.link);
   const originalLink = originalUrl ? `<a class="original-link" href="${escapeHtml(originalUrl)}" target="_blank" rel="noopener noreferrer">${originalLabel}</a>` : "";
   const evidenceDetails = item.ai_segment_count ? `<details class="video-evidence" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}"><summary>查看分段分析依据与资料出处</summary><div class="video-evidence-body setting-help"></div></details>` : "";
   const contentBadge = item.content_type_label ? `<span class="analysis-badge">${escapeHtml(item.content_type_label)}</span>` : "";
+  const noteCover = item.platform === "xiaohongshu" && item.images?.length ? `<img class="note-cover" data-note-image="${escapeHtml(noteImageUrl(item, 0))}" alt="笔记封面" loading="lazy">` : "";
   return `<article class="update-card ${item.read ? "" : "unread"}" data-update-key="${escapeHtml(updateKey(item))}">
     <div class="update-top"><h3 class="update-title"><button class="update-title-button briefing-link" type="button">${escapeHtml(item.title)}</button></h3><span class="update-source">${escapeHtml(sourceLabel)}</span></div>
     <div class="update-meta">发布时间：${escapeHtml(item.published || "未知")} · 检测于：${escapeHtml(formatTime(item.detected_at))}</div>
-    <div class="update-summary">${escapeHtml(summary)}</div>
+    ${noteCover}<div class="update-summary">${escapeHtml(summary)}</div>
     ${analysisWarning}
     ${evidenceDetails}
     <div class="analysis-footer"><div class="analysis-context">${contentBadge}${analysisBadge}${originalLink}</div><div class="analysis-actions">${summaryToggle}${reanalyzeButton}</div></div>
@@ -149,6 +188,7 @@ function updateCard(item) {
 
 function renderUpdates(container, items, emptyText) {
   container.innerHTML = items.length ? items.map(updateCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  loadNoteImages(container);
   container.querySelectorAll(".reanalyze-button").forEach((button) => button.addEventListener("click", reanalyzeVideo));
   container.querySelectorAll(".video-evidence").forEach((element) => element.addEventListener("toggle", async () => {
     if (!element.open || element.dataset.loaded) return;
@@ -189,15 +229,47 @@ async function reanalyzeVideo(event) {
   button.disabled = true;
   button.textContent = "正在加入队列…";
   try {
-    const data = await api(`/api/videos/${encodeURIComponent(button.dataset.platform)}/${encodeURIComponent(button.dataset.articleId)}/reanalyze`, { method: "POST" });
+    const data = await api(`/api/videos/${encodeURIComponent(button.dataset.platform)}/${encodeURIComponent(button.dataset.articleId)}/reanalyze`, { method: "POST", ...(button.dataset.readingMode ? {body: JSON.stringify({reading_mode: button.dataset.readingMode})} : {}) });
     showToast(data.message);
-    if (state.currentView === "source-detail") await loadSourceDetail(state.sourcePlatform, state.sourceUid);
+    if (state.currentView === "briefing") await refreshNoteBriefing();
+    else if (state.currentView === "source-detail") await loadSourceDetail(state.sourcePlatform, state.sourceUid);
     else await loadDashboard();
   } catch (error) {
     showToast(error.message, true);
     button.disabled = false;
-    button.textContent = "重新视觉分析";
+    button.textContent = button.dataset.platform === "xiaohongshu" ? (button.dataset.readingMode === "full" ? "完整分析图文" : "重新分析图文（快速）") : "重新视觉分析";
   }
+}
+
+function noteAnalysisButtons(item) {
+  if (!item.link) return "";
+  const busy = ["pending", "processing"].includes(item.last_attempt_status) || ["pending", "processing"].includes(item.ai_status);
+  if (busy) return `<button class="text-button" type="button" disabled>正在分析图文…</button>`;
+  return ["quick", "full"].map(mode => `<button type="button" class="text-button reanalyze-button" data-platform="xiaohongshu" data-article-id="${escapeHtml(item.article_id)}" data-reading-mode="${mode}" ${busy ? "disabled" : ""}>${busy ? "正在分析…" : mode === "full" ? "完整分析图文" : "重新分析图文（快速）"}</button>`).join("");
+}
+
+async function refreshNoteBriefing() {
+  const item = state.briefingItem;
+  if (!item || state.currentView !== "briefing") return;
+  const data = await api(`/api/sources/${encodeURIComponent(item.platform)}/${encodeURIComponent(item.source_uid)}`);
+  if (state.currentView !== "briefing" || state.briefingItem.article_id !== item.article_id) return;
+  const updated = data.videos.find(row => row.article_id === item.article_id);
+  if (updated) { state.briefingItem = updated; renderBriefing(updated); }
+  if (updated && (["pending", "processing"].includes(updated.ai_status) || updated.last_attempt_status === "processing")) {
+    setTimeout(() => refreshNoteBriefing().catch(error => showToast(error.message, true)), 5000);
+  }
+}
+
+function noteCitations(text, item) {
+  return escapeHtml(text).replace(/\[图片\s*(\d+)\]/g, (match, value) => {
+    const number = Number(value);
+    return number >= 1 && number <= (item.images || []).length && (item.ai_image_numbers || []).includes(number)
+      ? `<button type="button" class="note-citation text-button" data-note-number="${number}">${match}</button>` : match;
+  });
+}
+
+function collectionStatusText(status = {}) {
+  return [status.message || "尚未检查", status.last_success_at ? `最近成功：${formatTime(status.last_success_at)}` : "尚无成功检查记录", status.pending_count ? `待补抓 ${status.pending_count} 篇` : "", status.scan_warning || ""].filter(Boolean).join(" · ");
 }
 
 function renderUnreadPanel(items = []) {
@@ -259,12 +331,37 @@ function renderBriefing(item) {
   $("#briefing-title").textContent = item.title || "简报详情";
   $("#briefing-source").textContent = item.source || "未知作者";
   $("#briefing-meta").textContent = `发布时间：${item.published || "未知"} · 检测时间：${formatTime(item.detected_at)}`;
-  $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? "\n\n画面分析不完整，请结合原视频查看。" : "")
+  if (item.platform === "xiaohongshu") $("#briefing-meta").textContent += ` · ${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 已读 ${item.ai_frame_count || 0}/${item.image_count || 0} 张${item.ai_completeness === "partial" ? " · 读取不完整" : ""}`;
+  $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? (item.platform === "xiaohongshu" ? "\n\n图文读取范围有限，请结合原笔记查看。" : "\n\n画面分析不完整，请结合原视频查看。") : "")
     + (item.last_attempt_status === "error" && item.ai_summary ? `\n\n最近一次重新分析失败，当前展示上次简报：${item.last_attempt_error || "请重试"}` : "");
   const original = $("#briefing-original-link");
   const originalUrl = safeExternalUrl(item.link);
   original.href = originalUrl || "#";
-  original.textContent = item.platform === "zhihu" ? "打开知乎原内容" : "打开B站原视频";
+  original.textContent = item.platform === "xiaohongshu" ? "打开小红书原笔记" : item.platform === "zhihu" ? "打开知乎原内容" : "打开B站原视频";
+  const note = $("#briefing-note");
+  note.hidden = item.platform !== "xiaohongshu";
+  if (!note.hidden) {
+    const summary = $("#briefing-summary");
+    summary.innerHTML = noteCitations(summary.textContent, item);
+    summary.querySelectorAll?.(".note-citation").forEach(button => button.addEventListener("click", () => $("#note-image-" + button.dataset.noteNumber)?.scrollIntoView({behavior: "smooth", block: "center"})));
+    const actions = $("#briefing-note-actions");
+    actions.innerHTML = noteAnalysisButtons(item);
+    actions.querySelectorAll?.(".reanalyze-button").forEach(button => button.addEventListener("click", reanalyzeVideo));
+    $("#briefing-note-images").innerHTML = (item.images || []).slice(0, 60).map((_, index) => `<figure id="note-image-${index + 1}"><img data-note-image="${escapeHtml(noteImageUrl(item, index))}" alt="笔记图片 ${index + 1}" loading="lazy"><figcaption>图片 ${index + 1}</figcaption></figure>`).join("");
+    loadNoteImages($("#briefing-note-images"));
+    $("#briefing-note-images").querySelectorAll?.("img").forEach((img, index) => img.addEventListener("click", () => {
+      if (!img.src.startsWith("blob:")) return;
+      $("#note-image-modal-picture").src = img.src;
+      $("#note-image-modal-title").textContent = `图片 ${index + 1} · 原图`;
+      $("#note-image-modal").hidden = false;
+      $("#note-image-modal-picture").parentElement.scrollTop = 0;
+    }));
+    $("#briefing-note-scope").textContent = `${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 共 ${item.image_count || 0} 张，已读 ${item.ai_frame_count || 0} 张。${(item.ai_analysis_warnings || []).join("；") || item.fetch_warning || ""}`;
+    $("#briefing-note-evidence").innerHTML = (item.ai_note_evidence || []).map(row => row.type === "image"
+      ? `<details class="note-original"><summary>图片 ${Number(row.number)} · 识别文字${row.status === "error" ? "（读取失败）" : row.status === "ocr_error" ? "（识别未完成）" : ""}</summary><div>${escapeHtml(row.ocr || "未识别到文字，请核对原图")}</div></details>`
+      : `<details class="note-original"><summary>图片 ${(row.numbers || []).map(Number).join("、")} · 模型合并解读</summary><div>${escapeHtml(row.text || "")}</div></details>`).join("") || `<p class="setting-help">这份旧简报尚无图片依据，可重新分析生成。</p>`;
+    $("#briefing-note-body").textContent = (item.description || "没有读取到正文") + ((item.tags || []).length ? `\n\n话题：${item.tags.join("、")}` : "");
+  }
   original.hidden = !originalUrl;
 }
 
@@ -289,13 +386,14 @@ async function backFromBriefing() {
 }
 
 function platformLabel(platform) {
-  return platform === "zhihu" ? "知乎" : "哔哩哔哩";
+  return ({zhihu: "知乎", bilibili: "哔哩哔哩", xiaohongshu: "小红书"})[platform] || platform;
 }
 
 function renderPlatforms(container, sources) {
   const platforms = [
     { key: "bilibili", label: "哔哩哔哩", mark: "B", caption: "视频与AI简报" },
     { key: "zhihu", label: "知乎", mark: "知", caption: "回答、文章、想法与视频" },
+    { key: "xiaohongshu", label: "小红书", mark: "红", caption: "图文笔记与AI简报" },
   ];
   container.innerHTML = platforms.map((platform) => {
     const matched = sources.filter((source) => source.platform === platform.key);
@@ -313,6 +411,7 @@ function renderSources(container, sources) {
   container.innerHTML = sources.length ? sources.map((source) => `<article class="source-card" data-platform="${escapeHtml(source.platform)}" data-uid="${escapeHtml(source.uid)}">
     <div class="source-card-top"><h3 class="source-name">${escapeHtml(source.name)}</h3><span class="source-platform">${escapeHtml(source.category || "B站")}</span></div>
     <div class="source-uid">${source.platform === "zhihu" ? "账号" : "账号编号"} · ${escapeHtml(source.uid)}</div>
+    ${source.platform === "xiaohongshu" ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
     <div class="source-stats"><div><strong>${source.new_video_count || 0}</strong>已收录内容</div><div><strong class="source-unread-count">${source.unread_count || 0}</strong>未读</div></div>
   </article>`).join("") : `<div class="empty-state">还没有关注对象，点击右上角添加第一位博主。</div>`;
   $$(".source-card").forEach((card) => card.addEventListener("click", () => loadSourceDetail(card.dataset.platform, card.dataset.uid)));
@@ -323,7 +422,7 @@ function showPlatformSources(platform) {
   state.selectedPlatform = platform;
   const sources = state.sources.filter((source) => source.platform === platform);
   $("#sources-heading").textContent = platformLabel(platform);
-  $("#sources-description").textContent = platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
+  $("#sources-description").textContent = platform === "xiaohongshu" ? "选择博主，查看图文笔记、图片和AI简报。" : platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
   $("#back-to-platforms").hidden = false;
   $("#source-list").className = "source-grid";
   renderSources($("#source-list"), sources);
@@ -404,15 +503,16 @@ async function loadAccounts() {
     const accounts = data.accounts || [];
     $("#account-list").innerHTML = accounts.map((account) => {
       const isZhihu = account.platform === "zhihu";
+      const isXhs = account.platform === "xiaohongshu";
       const identity = account.status === "logged_in"
-        ? (account.account_name || (isZhihu ? "知乎登录状态" : "B站账号"))
+        ? (account.account_name || (isXhs ? "小红书登录状态" : isZhihu ? "知乎登录状态" : "B站账号"))
         : (["expired", "credential_error"].includes(account.status)
           ? "登录凭证不可用，点击重新登录"
-          : (account.status === "unknown" ? "状态检查失败，仍可重新登录" : (isZhihu ? "点击打开知乎登录窗口" : "点击扫码登录")));
+          : (account.status === "verification_required" ? "请打开官方窗口完成验证，再保存登录状态" : account.status === "unknown" ? "状态检查失败，仍可重新登录" : (isXhs ? "点击打开小红书登录窗口" : isZhihu ? "点击打开知乎登录窗口" : "点击扫码登录")));
       const avatarUrl = safeExternalUrl(account.avatar);
       const image = avatarUrl
         ? `<img class="account-avatar" src="${escapeHtml(avatarUrl)}" alt="账号头像">`
-        : `<div class="account-logo ${isZhihu ? "zhihu" : ""}">${isZhihu ? "知" : "B"}</div>`;
+        : `<div class="account-logo ${isXhs ? "xiaohongshu" : isZhihu ? "zhihu" : ""}">${isXhs ? "红" : isZhihu ? "知" : "B"}</div>`;
       const storage = account.credential_storage || {};
       const canLogout = account.status === "logged_in" || storage.encrypted || storage.legacy_plaintext;
       const logout = canLogout ? `<button class="text-button account-logout-button" data-platform="${escapeHtml(account.platform)}" type="button">删除登录状态</button>` : "";
@@ -420,6 +520,7 @@ async function loadAccounts() {
     }).join("");
     $$('[data-account-platform="bilibili"]').forEach((card) => card.addEventListener("click", startQrLogin));
     $$('[data-account-platform="zhihu"]').forEach((card) => card.addEventListener("click", startZhihuLogin));
+    $$('[data-account-platform="xiaohongshu"]').forEach((card) => card.addEventListener("click", startXiaohongshuLogin));
     $$(".account-logout-button").forEach((button) => button.addEventListener("click", logoutAccount));
     const bilibiliStorage = accounts.find((account) => account.platform === "bilibili")?.credential_storage;
     const zhihuStorage = accounts.find((account) => account.platform === "zhihu")?.credential_storage;
@@ -428,7 +529,7 @@ async function loadAccounts() {
     } else if (bilibiliStorage?.legacy_plaintext || zhihuStorage?.legacy_plaintext) {
       $("#credential-protection").textContent = "检测到旧版明文凭证；下次读取或扫码登录时会自动迁移到Windows加密存储。";
     } else {
-      const protectedPlatforms = [bilibiliStorage?.encrypted ? "B站" : "", zhihuStorage?.encrypted ? "知乎" : ""].filter(Boolean);
+      const protectedPlatforms = accounts.filter(account => account.credential_storage?.encrypted).map(account => account.name);
       $("#credential-protection").textContent = protectedPlatforms.length
         ? `${protectedPlatforms.join("和")}登录凭证已使用 Windows 当前用户加密保护。`
         : "尚未保存平台登录凭证。登录后将使用 Windows 当前用户加密保护。";
@@ -480,10 +581,56 @@ async function closeZhihuLoginModal() {
   $("#zhihu-login-modal").hidden = true;
 }
 
+async function startXiaohongshuLogin(event) {
+  if (event?.target?.closest(".account-logout-button")) return;
+  if (!hasDesktopBridge()) {
+    showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
+    return;
+  }
+  $("#xiaohongshu-login-modal").hidden = false;
+  $("#finish-xiaohongshu-login").disabled = false;
+  $("#finish-xiaohongshu-login").textContent = "保存登录状态";
+  $("#reopen-xiaohongshu-login").hidden = false;
+  $("#xiaohongshu-login-status").textContent = "正在打开小红书登录窗口…";
+  try {
+    const result = await window.pywebview.api.start_xiaohongshu_login();
+    $("#xiaohongshu-login-status").textContent = result.message;
+  } catch (error) {
+    $("#xiaohongshu-login-status").textContent = `登录窗口打开失败：${error.message || error}`;
+  }
+}
+
+async function finishXiaohongshuLogin() {
+  if (!hasDesktopBridge()) return;
+  const button = $("#finish-xiaohongshu-login");
+  button.disabled = true;
+  $("#xiaohongshu-login-status").textContent = "正在检查并加密保存小红书登录状态…";
+  try {
+    const result = await window.pywebview.api.finish_xiaohongshu_login();
+    $("#xiaohongshu-login-status").textContent = result.message;
+    if (result.saved) {
+      showToast(result.message);
+      button.textContent = "已加密保存";
+      $("#reopen-xiaohongshu-login").hidden = true;
+      $("#xiaohongshu-login-status").textContent = result.message + "。可关闭此弹窗；后续实际读取会验证登录是否有效。";
+      await loadAccounts();
+    }
+  } catch (error) {
+    $("#xiaohongshu-login-status").textContent = `登录状态保存失败：${error.message || error}`;
+  } finally {
+    button.disabled = button.textContent === "已加密保存";
+  }
+}
+
+async function closeXiaohongshuLoginModal() {
+  if (hasDesktopBridge()) await window.pywebview.api.cancel_xiaohongshu_login().catch(() => {});
+  $("#xiaohongshu-login-modal").hidden = true;
+}
+
 async function logoutAccount(event) {
   event.stopPropagation();
   const platform = event.currentTarget.dataset.platform;
-  const platformLabel = platform === "zhihu" ? "知乎" : "B站";
+  const platformLabel = ({zhihu: "知乎", bilibili: "B站", xiaohongshu: "小红书"})[platform] || platform;
   if (!window.confirm(`确定删除本机保存的${platformLabel}登录状态吗？`)) return;
   if (platform === "bilibili") stopQrPolling();
   try {
@@ -494,12 +641,14 @@ async function logoutAccount(event) {
 }
 
 function syncSourceFormPlatform() {
-  const isZhihu = $("#source-platform").value === "zhihu";
-  $("#source-id-label").textContent = isZhihu ? "主页链接或网址标识" : "账号编号";
-  $("#source-uid").inputMode = isZhihu ? "url" : "numeric";
-  $("#source-uid").placeholder = isZhihu ? "例如：https://www.zhihu.com/org/zhi-hu-ri-bao-51-41" : "例如：21131684";
-  $("#zhihu-cookie-field").hidden = !isZhihu;
-  if (!isZhihu) $("#source-cookie").value = "";
+  const platform = $("#source-platform").value;
+  const isZhihu = platform === "zhihu", isXhs = platform === "xiaohongshu";
+  $("#source-id-label").textContent = isXhs ? "博主主页链接或账号ID" : isZhihu ? "主页链接或网址标识" : "账号编号";
+  $("#source-uid").inputMode = isZhihu || isXhs ? "url" : "numeric";
+  $("#source-uid").placeholder = isXhs ? "https://www.xiaohongshu.com/user/profile/…" : isZhihu ? "https://www.zhihu.com/org/zhi-hu-ri-bao-51-41" : "例如：21131684";
+  $("#zhihu-cookie-field").hidden = !(isZhihu || isXhs);
+  $("#zhihu-cookie-field .form-label").textContent = `手动填写${isXhs ? "小红书" : "知乎"} Cookie（备用）`;
+  $("#source-cookie").value = "";
 }
 
 function openSourceModal() {
@@ -553,11 +702,11 @@ async function loadSourceDetail(platform, uid) {
     const data = await api(`/api/sources/${encodeURIComponent(platform)}/${encodeURIComponent(uid)}`);
     $("#detail-source-name").textContent = data.source.name;
     state.sourceName = data.source.name;
-    const platformLabel = data.source.platform === "zhihu" ? "知乎账号" : "B站账号编号";
-    $("#detail-source-meta").textContent = `${platformLabel} ${data.source.uid} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · 最近3条初始展示，之后每次最多追加3条新内容`;
+    const platformLabel = data.source.platform === "xiaohongshu" ? "小红书账号" : data.source.platform === "zhihu" ? "知乎账号" : "B站账号编号";
+    $("#detail-source-meta").textContent = `${platformLabel} ${data.source.uid} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "xiaohongshu" ? "首次展示3篇，之后增量补抓，每次最多读取20篇；超过范围会提示" : "最近3条初始展示，之后每次最多追加3条新内容"}${platform === "xiaohongshu" ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
     state.sourceDetailData = data;
     state.sourceContentType = platform === "zhihu" ? previousContentType : "video";
-    const typeOrder = ["文章", "回答", "想法", "提问", "视频", "其他"];
+    const typeOrder = ["图文", "文章", "回答", "想法", "提问", "视频", "其他"];
     const grouped = Object.groupBy ? Object.groupBy(data.videos, (item) => item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他")) : data.videos.reduce((acc, item) => { const key = item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他"); (acc[key] ||= []).push(item); return acc; }, {});
     const detailContainer = $("#source-videos");
     const typeMenu = $("#detail-content-types");
@@ -585,8 +734,8 @@ async function loadSourceDetail(platform, uid) {
       renderUpdates(section.querySelector(".content-type-list"), grouped[type], `暂无${type}。`);
       });
     }
-    if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">暂时还没有可展示的内容。</div>`;
-    const failedCount = data.videos.filter((video) => ["bilibili", "article", "zvideo", "video"].includes(video.platform === "bilibili" ? "bilibili" : video.content_type) && video.ai_status === "error").length;
+    if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">${platform === "xiaohongshu" ? "近期暂无图文笔记，之后发布的图文会自动收录。" : "暂时还没有可展示的内容。"}</div>`;
+    const failedCount = data.videos.filter((video) => ["bilibili", "article", "zvideo", "video", "image_note"].includes(video.platform === "bilibili" ? "bilibili" : video.content_type) && video.ai_status === "error").length;
     $("#retry-source-summaries").hidden = failedCount === 0;
     $("#retry-source-summaries").textContent = `重试失败简报（${failedCount}）`;
     if (data.warning) showToast(data.warning, true);
@@ -869,7 +1018,7 @@ async function updateAutomation(event) {
 async function addSource(event) {
   event.preventDefault();
   const isZhihu = $("#source-platform").value === "zhihu";
-  $("#source-form-error").textContent = isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
+  $("#source-form-error").textContent = $("#source-platform").value === "xiaohongshu" ? "正在读取小红书博主的图文笔记，请稍候…" : isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
   try {
     const data = await api("/api/sources", { method: "POST", body: JSON.stringify({ platform: $("#source-platform").value, uid: $("#source-uid").value.trim(), name: $("#source-name").value.trim() || null, cookie: $("#source-cookie").value.trim() || null }) });
     $("#source-modal").hidden = true;
@@ -961,6 +1110,12 @@ function bindEvents() {
   $("#reopen-zhihu-login").addEventListener("click", startZhihuLogin);
   $("#close-zhihu-login-modal").addEventListener("click", closeZhihuLoginModal);
   $("#zhihu-login-modal").addEventListener("click", (event) => { if (event.target.id === "zhihu-login-modal") closeZhihuLoginModal(); });
+  $("#finish-xiaohongshu-login").addEventListener("click", finishXiaohongshuLogin);
+  $("#close-note-image-modal").addEventListener("click", () => { $("#note-image-modal").hidden = true; });
+  $("#note-image-modal").addEventListener("click", event => { if (event.target.id === "note-image-modal") $("#note-image-modal").hidden = true; });
+  $("#reopen-xiaohongshu-login").addEventListener("click", startXiaohongshuLogin);
+  $("#close-xiaohongshu-login-modal").addEventListener("click", closeXiaohongshuLoginModal);
+  $("#xiaohongshu-login-modal").addEventListener("click", (event) => { if (event.target.id === "xiaohongshu-login-modal") closeXiaohongshuLoginModal(); });
   $("#api-key-form").addEventListener("submit", updateAiProvider);
   $("#video-analysis-form").addEventListener("submit", updateVideoAnalysis);
   $("#test-video-input").addEventListener("click", testVideoInput);

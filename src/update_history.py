@@ -16,11 +16,12 @@ DATA_PATH = PROJECT_ROOT / "data" / "update_history.json"
 SUMMARY_DIR = PROJECT_ROOT / "output" / "summaries"
 MAX_ITEMS = 1000
 _data_lock = threading.RLock()
-ANALYSIS_FIELDS = ("ai_segment_count", "ai_completeness", "ai_input_mode", "ai_evidence_file", "ai_analysis_warnings", "ai_fallback_reason")
+ANALYSIS_FIELDS = ("ai_segment_count", "ai_completeness", "ai_input_mode", "ai_evidence_file", "ai_analysis_warnings", "ai_fallback_reason", "ai_note_reading_mode", "ai_note_evidence", "ai_image_numbers", "requested_note_reading_mode")
+NOTE_FIELDS = ("note_id", "images", "image_count", "cover_url", "tags", "detail_status", "fetch_warning", "author_avatar")
 
 
 def _copy_analysis_fields(target: dict, source: dict) -> None:
-    for name in ANALYSIS_FIELDS:
+    for name in (*ANALYSIS_FIELDS, *NOTE_FIELDS):
         if name in source:
             target[name] = source[name]
 
@@ -108,7 +109,7 @@ def _recover_item_from_summary_cache(item: dict) -> bool:
     item["ai_frame_count"] = int(
         cached.get("frame_count", item.get("ai_frame_count", 0))
     )
-    for target, name in (("ai_segment_count", "segment_count"), ("ai_completeness", "completeness"), ("ai_input_mode", "input_mode"), ("ai_evidence_file", "evidence_file"), ("ai_analysis_warnings", "analysis_warnings"), ("ai_fallback_reason", "fallback_reason")):
+    for target, name in (("ai_segment_count", "segment_count"), ("ai_completeness", "completeness"), ("ai_input_mode", "input_mode"), ("ai_evidence_file", "evidence_file"), ("ai_analysis_warnings", "analysis_warnings"), ("ai_fallback_reason", "fallback_reason"), ("ai_note_reading_mode", "note_reading_mode"), ("ai_note_evidence", "note_evidence"), ("ai_image_numbers", "image_numbers")):
         if name in cached:
             item[target] = cached[name]
     item["summary_strategy"] = cached.get(
@@ -177,7 +178,11 @@ def refresh_history_metadata(articles: list[dict]) -> int:
                 "content_type": article.get("content_type", ""),
                 "content_type_label": article.get("content_type_label", ""),
                 "action": article.get("action", ""),
+                **{key: article[key] for key in NOTE_FIELDS if key in article},
             }
+            if item.get("detail_status") == "available" and article.get("detail_status") == "preview_only":
+                for field in (*NOTE_FIELDS, "description", "title", "published"):
+                    replacements.pop(field, None)
             item_changed = False
             for field, value in replacements.items():
                 if value in (None, "") or item.get(field) == value:
@@ -247,6 +252,10 @@ def record_updates(articles: list[dict]) -> list[dict]:
             }
             # 定时检查再次抓到同一个视频时，失败或空结果不能覆盖此前的成功简报。
             _copy_analysis_fields(item, article)
+            if old.get("detail_status") == "available" and article.get("detail_status") == "preview_only":
+                for field in (*NOTE_FIELDS, "description", "title", "published"):
+                    if field in old:
+                        item[field] = old[field]
             if old.get("ai_status") == "available" and old.get("ai_summary"):
                 if item.get("ai_status") != "available" or not item.get("ai_summary"):
                     item["ai_status"] = "available"
@@ -437,6 +446,8 @@ def update_ai_result(
                 item["last_attempt_at"] = now
                 item["last_attempt_status"] = status
                 item["last_attempt_error"] = error[:500]
+                if analysis_details and analysis_details.get("requested_note_reading_mode") in {"quick", "full"}:
+                    item["requested_note_reading_mode"] = analysis_details["requested_note_reading_mode"]
                 if stage:
                     item["ai_stage"] = stage
 

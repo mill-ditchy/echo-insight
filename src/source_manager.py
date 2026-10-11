@@ -50,6 +50,9 @@ def normalize_source_uid(platform: str, value: str) -> str:
     """把用户输入转换成稳定、可用于URL路径的内部标识。"""
     platform = str(platform).strip().lower()
     value = str(value).strip().rstrip("/")
+    if platform == "xiaohongshu":
+        from .platforms.xiaohongshu import normalize_uid
+        return normalize_uid(value)
     if platform != "zhihu":
         return value
 
@@ -81,7 +84,7 @@ def normalize_source_uid(platform: str, value: str) -> str:
         )
     return f"auto:{value}"
 
-def add_source(platform: str, uid: str, name: str | None = None) -> bool:
+def add_source(platform: str, uid: str, name: str | None = None, *, profile_url: str = "", avatar: str = "") -> bool:
     """添加一个关注。"""
     info = PLATFORMS.get(platform)
     if not info:
@@ -96,6 +99,8 @@ def add_source(platform: str, uid: str, name: str | None = None) -> bool:
     if not uid:
         print("UID 不能为空。")
         return False
+    if platform == "xiaohongshu" and profile_url and normalize_source_uid(platform, profile_url) != uid:
+        raise ValueError("主页链接与账号ID不一致")
 
     with _source_lock, interprocess_lock(CONFIG_PATH):
         data = _load()
@@ -114,6 +119,7 @@ def add_source(platform: str, uid: str, name: str | None = None) -> bool:
             "uid": uid,
             "category": info["category"],
             "added_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            **({"profile_url": profile_url, "avatar": avatar} if platform == "xiaohongshu" else {}),
         })
         data["sources"] = sources
         _save(data)

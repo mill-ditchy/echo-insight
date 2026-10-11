@@ -234,7 +234,7 @@ def run_once(initialize: bool = False) -> int:
     partial_failure = ""
     if fetch_errors:
         logging.error("元数据请求出现错误：%s", "；".join(fetch_errors))
-        if not articles:
+        if not articles and any("补抓范围有限:" not in error for error in fetch_errors):
             raise RuntimeError("；".join(fetch_errors))
         partial_failure = "部分来源读取失败：" + "；".join(fetch_errors)
 

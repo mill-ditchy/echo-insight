@@ -1,6 +1,7 @@
 """用桌面窗口打开赛博情报局页面。"""
 
 import socket
+import argparse
 import threading
 import time
 
@@ -9,6 +10,7 @@ import webview
 
 from webapp import app
 from src.accounts.zhihu_account import save_webview_login
+from src.accounts.xiaohongshu_account import save_webview_login as save_xhs_login
 
 
 HOST = "127.0.0.1"
@@ -20,6 +22,7 @@ class DesktopApi:
 
     def __init__(self) -> None:
         self._zhihu_window = None
+        self._xiaohongshu_window = None
         self._lock = threading.RLock()
 
     def _release_zhihu_window(self, window=None) -> None:
@@ -78,6 +81,56 @@ class DesktopApi:
             "account": account,
         }
 
+    def start_xiaohongshu_login(self) -> dict:
+        with self._lock:
+            if self._xiaohongshu_window is not None:
+                try:
+                    self._xiaohongshu_window.restore()
+                    self._xiaohongshu_window.show()
+                    self._xiaohongshu_window.on_top = True
+                    self._xiaohongshu_window.on_top = False
+                    return {"opened": True, "message": "小红书登录窗口已经打开"}
+                except Exception:
+                    self._xiaohongshu_window = None
+            window = webview.create_window("登录小红书", "https://www.xiaohongshu.com/explore",
+                                           width=980, height=760, min_size=(720, 560), text_select=True, focus=True, on_top=True)
+            self._xiaohongshu_window = window
+            window.events.loaded += lambda: setattr(window, "on_top", False)
+            def release():
+                with self._lock:
+                    if self._xiaohongshu_window is window:
+                        self._xiaohongshu_window = None
+            window.events.closing += lambda: self._clear_window_cookies(window)
+            window.events.closed += release
+        return {"opened": True, "message": "请在官方小红书窗口完成登录，再回来保存登录状态"}
+
+    def finish_xiaohongshu_login(self) -> dict:
+        with self._lock:
+            window = self._xiaohongshu_window
+        if window is None:
+            return {"saved": False, "message": "小红书登录窗口尚未打开或已关闭"}
+        try:
+            account = save_xhs_login(window.get_cookies())
+        except Exception as exc:
+            return {"saved": False, "message": str(exc)}
+        self._clear_window_cookies(window)
+        window.destroy()
+        with self._lock:
+            if self._xiaohongshu_window is window:
+                self._xiaohongshu_window = None
+        return {"saved": True, "message": "小红书登录状态已加密保存", "account": account}
+
+    def cancel_xiaohongshu_login(self) -> dict:
+        with self._lock:
+            window = self._xiaohongshu_window
+        if window is not None:
+            self._clear_window_cookies(window)
+            window.destroy()
+            with self._lock:
+                if self._xiaohongshu_window is window:
+                    self._xiaohongshu_window = None
+        return {"cancelled": True}
+
     def cancel_zhihu_login(self) -> dict:
         with self._lock:
             window = self._zhihu_window
@@ -125,7 +178,7 @@ def _wait_until_ready(
     raise RuntimeError("本地页面服务启动超时")
 
 
-def main() -> None:
+def main(*, login_xiaohongshu: bool = False) -> None:
     listener, port = _open_listener()
     config = uvicorn.Config(app, host=HOST, port=port, log_level="warning", proxy_headers=False)
     server = uvicorn.Server(config)
@@ -140,7 +193,7 @@ def main() -> None:
         _wait_until_ready(server, thread, port)
 
         desktop_api = DesktopApi()
-        webview.create_window(
+        main_window = webview.create_window(
             "赛博情报局",
             f"http://{HOST}:{port}",
             js_api=desktop_api,
@@ -149,6 +202,14 @@ def main() -> None:
             min_size=(980, 680),
             background_color="#07111f",
         )
+        if login_xiaohongshu:
+            def open_login():
+                main_window.evaluate_js("""(() => {
+                  const open = () => { setView('accounts'); loadAccounts(); startXiaohongshuLogin(); };
+                  if (window.pywebview?.api) open();
+                  else window.addEventListener('pywebviewready', open, {once: true});
+                })()""")
+            main_window.events.loaded += open_login
         webview.start(private_mode=True)
     finally:
         server.should_exit = True
@@ -158,4 +219,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--login-xiaohongshu", action="store_true")
+    main(login_xiaohongshu=parser.parse_args().login_xiaohongshu)

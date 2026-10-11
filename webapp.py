@@ -14,6 +14,7 @@ import random
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -30,6 +31,7 @@ from src.accounts.bilibili_account import (
     start_qr_login,
 )
 from src.accounts.zhihu_account import get_zhihu_account_status, logout_zhihu
+from src.accounts.xiaohongshu_account import get_account_status as get_xhs_status, logout as logout_xhs, normalize_cookie as normalize_xhs_cookie, save_cookie as save_xhs_cookie
 from src.ai_provider import effective_provider_config, provider_payload, save_provider_settings
 from src.ai_connection import list_provider_models, test_provider_connection
 from src.processors.video_analysis_config import load_settings as load_video_settings, save_settings as save_video_settings, validate_settings as validate_video_settings
@@ -42,6 +44,7 @@ from src.security.cache_paths import cache_file
 from src.check_history import list_checks
 from src.fetcher import enrich_article, needs_ai_summary, select_recent_unique_articles
 from src.platforms.registry import get_fetcher
+from src.platforms.xiaohongshu_status import public_source_status
 from src.security.secret_store import (
     opencode_api_key_status,
     normalize_zhihu_cookie,
@@ -186,6 +189,10 @@ class AiProviderUpdate(AiProviderAccess):
 
 class QrStatusRequest(BaseModel):
     qrcode_key: str = Field(min_length=1, max_length=512)
+
+
+class NoteAnalysisRequest(BaseModel):
+    reading_mode: Literal["quick", "full"] = "quick"
 
 
 class VideoAnalysisUpdate(BaseModel):
@@ -360,6 +367,8 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
         )
     )
     content_types = []
+    if source.get("platform") == "xiaohongshu":
+        content_type_order = (("image_note", "图文"),)
     for content_type, label in content_type_order:
         matched = [
             item
@@ -376,6 +385,7 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
             })
     return {
         **source,
+        **({"collection_status": public_source_status(str(source.get("uid", "")))} if source.get("platform") == "xiaohongshu" else {}),
         "uid": str(source.get("uid", "")),
         "new_video_count": len(updates),
         "unread_count": sum(1 for item in updates if not item.get("read")),
@@ -487,18 +497,29 @@ def _start_visual_reanalysis(item: dict) -> bool:
     """在全局单队列中重新生成一条视频的视觉简报。"""
     platform = str(item.get("platform", ""))
     current_id = str(item.get("article_id", ""))
-    if platform != "bilibili" or not current_id or not item.get("link"):
+    if platform not in {"bilibili", "xiaohongshu"} or not current_id or not item.get("link"):
         return False
+    if platform == "xiaohongshu":
+        from src.processors.xiaohongshu_summary import note_analysis_running
+        if note_analysis_running(current_id):
+            return False
     job_key = f"{platform}:{current_id}"
     with _baseline_jobs_lock:
         if job_key in _visual_jobs:
             return False
         _visual_jobs.add(job_key)
 
+    try:
+        update_ai_result(platform, current_id, "processing", stage="waiting", analysis_details=item)
+    except Exception:
+        with _baseline_jobs_lock:
+            _visual_jobs.discard(job_key)
+        raise
+
     def worker() -> None:
         try:
             with _baseline_processing_semaphore:
-                update_ai_result(platform, current_id, "processing", stage="subtitle")
+                update_ai_result(platform, current_id, "processing", stage="note_reading" if platform == "xiaohongshu" else "subtitle")
                 article = dict(item)
                 try:
                     enrich_article(
@@ -509,7 +530,7 @@ def _start_visual_reanalysis(item: dict) -> bool:
                             "processing",
                             stage=stage,
                         ),
-                        use_cache=item.get("ai_completeness") == "partial",
+                        use_cache=platform != "xiaohongshu" and item.get("ai_completeness") == "partial",
                     )
                     update_ai_result(
                         platform,
@@ -584,7 +605,29 @@ def mark_single_update_read(platform: str, current_article_id: str) -> dict:
 
 @app.get("/api/accounts")
 def accounts() -> dict:
-    return {"accounts": [get_account_status(), get_zhihu_account_status()]}
+    return {"accounts": [get_account_status(), get_zhihu_account_status(), get_xhs_status()]}
+
+
+@app.post("/api/accounts/xiaohongshu/logout")
+def xhs_logout() -> dict:
+    try:
+        return {"account": logout_xhs(), "message": "小红书登录状态已删除"}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail="小红书登录状态删除失败，请稍后重试") from exc
+
+
+@app.get("/api/notes/{current_article_id}/images/{index}")
+def note_image(current_article_id: str, index: int):
+    from src.processors.xiaohongshu_images import download_image
+    item = next((i for i in list_updates(limit=MAX_ITEMS)
+                 if i.get("platform") == "xiaohongshu" and i.get("article_id") == current_article_id), None)
+    if not item or index < 0 or index >= min(len(item.get("images") or []), 60):
+        raise HTTPException(status_code=404, detail="没有找到这张笔记图片")
+    try:
+        path = download_image(item["images"][index])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="笔记图片读取失败，请打开原笔记查看") from exc
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.post("/api/accounts/zhihu/logout")
@@ -654,6 +697,10 @@ def source_detail(platform: str, uid: str) -> dict:
         and video.get("ai_status") not in {"available", "error"}
     ]
     _start_baseline_processing(source, pending_videos)
+    if platform == "xiaohongshu":
+        for video in videos:
+            if video.get("requested_note_reading_mode") and video.get("last_attempt_status") == "processing":
+                _start_visual_reanalysis(video)
     videos = list_updates(source_uid=uid, platform=platform, limit=200)
     return {
         "source": _source_payload(source, videos),
@@ -697,7 +744,9 @@ def retry_source_summaries(platform: str, uid: str) -> dict:
 
 
 @app.post("/api/videos/{platform}/{current_article_id}/reanalyze")
-def reanalyze_video(platform: str, current_article_id: str) -> dict:
+def reanalyze_video(platform: str, current_article_id: str, payload: NoteAnalysisRequest | None = None) -> dict:
+    if platform not in {"bilibili", "xiaohongshu"}:
+        raise HTTPException(status_code=400, detail="此内容暂不支持重新分析")
     item = next(
         (
             video
@@ -708,14 +757,16 @@ def reanalyze_video(platform: str, current_article_id: str) -> dict:
         None,
     )
     if not item:
-        raise HTTPException(status_code=404, detail="没有找到这个视频")
+        raise HTTPException(status_code=404, detail="没有找到这条内容")
+    if platform == "xiaohongshu":
+        item["requested_note_reading_mode"] = payload.reading_mode if payload else item.get("ai_note_reading_mode", "quick")
     started = _start_visual_reanalysis(item)
     return {
         "started": started,
         "message": (
-            "已加入视觉分析队列，旧简报会保留到新简报成功生成"
+            "已加入分析队列，旧简报会保留到新简报成功生成"
             if started
-            else "这个视频已经在视觉分析队列中"
+            else "这条内容已经在分析队列中"
         ),
     }
 
@@ -729,8 +780,8 @@ def create_source(payload: SourceCreate) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     name = (payload.name or "").strip()
 
-    if platform not in {"bilibili", "zhihu"}:
-        raise HTTPException(status_code=400, detail="目前只支持B站和知乎")
+    if platform not in {"bilibili", "zhihu", "xiaohongshu"}:
+        raise HTTPException(status_code=400, detail="目前支持B站、知乎和小红书图文")
     if platform == "bilibili" and not uid.isdigit():
         raise HTTPException(status_code=400, detail="B站UID应该是纯数字")
     provided_cookie = ""
@@ -739,13 +790,23 @@ def create_source(payload: SourceCreate) -> dict:
             provided_cookie = normalize_zhihu_cookie(payload.cookie)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if platform == "xiaohongshu" and payload.cookie and payload.cookie.strip():
+        try:
+            provided_cookie = normalize_xhs_cookie(payload.cookie)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if get_source(platform, uid):
         raise HTTPException(status_code=409, detail="这位博主已经在关注列表中")
 
     fetcher = get_fetcher(platform)
     existing_articles = []
+    profile = {}
     try:
-        if platform == "zhihu" and provided_cookie:
+        if platform == "xiaohongshu":
+            profile_url = payload.uid.strip() if payload.uid.strip().startswith("https://") else ""
+            profile = fetcher.read_profile(uid, cookie_override=provided_cookie or None, profile_url=profile_url)
+            existing_articles = select_recent_unique_articles(profile["articles"])
+        elif platform == "zhihu" and provided_cookie:
             existing_articles = (
                 select_recent_unique_articles(
                     fetcher.fetch(uid, cookie_override=provided_cookie)
@@ -758,7 +819,7 @@ def create_source(payload: SourceCreate) -> dict:
             )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"验证博主失败：{exc}") from exc
-    if not existing_articles:
+    if not existing_articles and not (platform == "xiaohongshu" and profile.get("profile_name") and (profile.get("video_only") or profile.get("empty_confirmed"))):
         raise HTTPException(
             status_code=502,
             detail="没有抓到这位博主的原创内容，请检查主页链接或稍后重试",
@@ -766,11 +827,14 @@ def create_source(payload: SourceCreate) -> dict:
 
     if provided_cookie:
         try:
-            save_zhihu_cookie(provided_cookie)
+            if platform == "xiaohongshu":
+                save_xhs_cookie(provided_cookie)
+            else:
+                save_zhihu_cookie(provided_cookie)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"知乎Cookie加密保存失败：{exc}") from exc
+            raise HTTPException(status_code=500, detail="平台登录状态加密保存失败") from exc
 
-    display_name = name or (
+    display_name = name or profile.get("profile_name") or (
         existing_articles[0].get("author_name") if existing_articles else ""
     )
     if not display_name and platform == "zhihu" and fetcher:
@@ -779,22 +843,26 @@ def create_source(payload: SourceCreate) -> dict:
         except Exception:
             display_name = ""
     if not display_name:
-        if platform == "zhihu":
+        if platform in {"zhihu", "xiaohongshu"}:
             raise HTTPException(
                 status_code=502,
-                detail="已找到知乎主页，但没有读取到博主真实网名，本次不会保存关注",
+                detail="已找到主页，但没有读取到博主名称，请填写备注名称后重试",
             )
         display_name = f"{platform} - {uid}"
-    if not add_source(platform, uid, display_name):
+    source_options = {"profile_url": profile_url, "avatar": profile.get("profile_avatar", "")} if platform == "xiaohongshu" else {}
+    if not add_source(platform, uid, display_name, **source_options):
         raise HTTPException(status_code=500, detail="关注保存失败")
 
     source = get_source(platform, uid)
     for article in existing_articles:
         article["source"] = display_name
-        article["category"] = "B站" if platform == "bilibili" else "知乎"
+        article["category"] = {"bilibili": "B站", "zhihu": "知乎", "xiaohongshu": "小红书"}[platform]
         article["platform"] = platform
         article["source_uid"] = uid
-    mark_seen(existing_articles, load_state())
+    initial_state = load_state()
+    if platform == "xiaohongshu" and not existing_articles:
+        initial_state.setdefault("sources", {}).setdefault(f"{platform}:{uid}", {"name": display_name, "seen_ids": []})
+    mark_seen(existing_articles, initial_state)
     previews = record_baseline_preview(existing_articles)
     _start_baseline_processing(source or {}, previews)
 
@@ -802,6 +870,8 @@ def create_source(payload: SourceCreate) -> dict:
         f"已关注 {display_name}，最近 {len(previews)} 条内容已加入详情页展示，"
         "之后的新内容会进入最新消息"
     )
+    if platform == "xiaohongshu" and not previews:
+        message = f"已关注 {display_name}，近期暂无图文笔记；之后发布的图文会自动收录"
     return {
         "source": _source_payload(source or {}),
         "baseline_count": len(existing_articles),

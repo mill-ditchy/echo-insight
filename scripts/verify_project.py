@@ -18,6 +18,7 @@ def run_checks(root: Path, clean: bool = False) -> None:
         ["node", "tests/test_frontend_security.js"],
         ["node", "tests/test_ai_provider_frontend.js"],
         ["node", "tests/test_video_understanding_frontend.js"],
+        ["node", "tests/test_xiaohongshu_frontend.js"],
     ]
     if clean:
         commands.append([sys.executable, "scripts/smoke_test.py"])

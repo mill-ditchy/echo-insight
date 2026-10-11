@@ -116,6 +116,14 @@
           </div>
           <div class="briefing-meta" id="briefing-meta"></div>
           <div class="briefing-summary" id="briefing-summary"></div>
+          <div id="briefing-note" hidden>
+            <div id="briefing-note-actions" class="analysis-actions"></div>
+            <p class="setting-help">快速分析最多读取前6张；完整分析最多读取30张，模型用量会随图片数量增加。摘要引用可点击核对原图。</p>
+            <div class="note-image-grid" id="briefing-note-images"></div>
+            <p class="setting-help" id="briefing-note-scope"></p>
+            <div id="briefing-note-evidence"></div>
+            <details class="note-original"><summary>查看笔记原文与话题</summary><div id="briefing-note-body"></div></details>
+          </div>
           <div class="briefing-actions">
             <a class="primary-button briefing-original-link" id="briefing-original-link" target="_blank" rel="noreferrer">打开原内容</a>
           </div>
@@ -124,7 +132,7 @@
 
       <section class="view" id="view-accounts">
         <div class="section-heading page-heading">
-          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩和知乎的本机登录状态。</p></div>
+          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩、知乎和小红书的本机登录状态。</p></div>
         </div>
         <div class="account-list" id="account-list"></div>
         <div class="account-security-note">
@@ -183,7 +191,7 @@
               </div>
               <p class="ai-field-help">测试会发送少量文字；启用画面分析时还会测试图片输入，可能消耗少量额度。测试不保存设置。已保存的 Key 留空也可测试。</p>
               <div class="setting-result" id="ai-test-result" role="status" aria-live="polite"></div>
-              <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用视频画面分析（需要支持图片输入的模型）</label>
+              <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用图片与视频画面分析（需要支持图片输入的模型）</label>
               <div id="ai-vision-model-field" hidden>
                 <label for="ai-vision-model">视觉模型名称（可选）</label>
                 <input id="ai-vision-model" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="留空则使用文字模型">
@@ -249,7 +257,7 @@
       <h2>添加关注</h2>
       <p class="section-description">添加后会读取最近3条内容用于详情页展示，但不会把它们计入未读更新。</p>
       <form id="source-form">
-        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option></select></label>
+        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option><option value="xiaohongshu">小红书（图文）</option></select></label>
         <label><span class="form-label" id="source-id-label">账号编号</span><input id="source-uid" inputmode="numeric" placeholder="例如：21131684" required></label>
         <label id="zhihu-cookie-field" hidden><span class="form-label">手动填写知乎 Cookie（备用）</span><textarea id="source-cookie" rows="3" placeholder="建议先在账号管理中登录；也可在这里粘贴 Cookie"></textarea></label>
         <label><span class="form-label">备注名称（可选）</span><input id="source-name" placeholder="不填写则使用博主名称"></label>
@@ -278,6 +286,25 @@
         <button class="ghost-button" id="reopen-zhihu-login" type="button">重新打开窗口</button>
         <button class="primary-button" id="finish-zhihu-login" type="button">保存登录状态</button>
       </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="xiaohongshu-login-modal" hidden>
+    <div class="modal">
+      <button class="modal-close" id="close-xiaohongshu-login-modal" type="button">×</button>
+      <h2>登录小红书</h2>
+      <p class="section-description">① 在官方窗口完成登录；② 保持官方窗口打开，回到这里点击“保存登录状态”；③ 等待“已加密保存”提示后关闭弹窗。</p>
+      <div class="qr-status" id="xiaohongshu-login-status">准备打开小红书登录窗口…</div>
+      <div class="modal-actions xiaohongshu-login-actions">
+        <button class="ghost-button" id="reopen-xiaohongshu-login" type="button">重新打开窗口</button>
+        <button class="primary-button" id="finish-xiaohongshu-login" type="button">保存登录状态</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="note-image-modal" hidden>
+    <div class="modal note-image-modal-content">
+      <button class="modal-close" id="close-note-image-modal" type="button">×</button>
+      <h2 id="note-image-modal-title">笔记原图</h2>
+      <img id="note-image-modal-picture" alt="笔记原图">
     </div>
   </div>
   <div class="modal-backdrop" id="delete-source-modal" hidden>
