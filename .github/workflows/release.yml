@@ -1,0 +1,55 @@
+name: Draft source release
+
+'on':
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+  release:
+    needs: checks
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Build checked source archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/release.py build --ref "$env:RELEASE_TAG"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $NotesPath = Join-Path "docs/releases" "$env:RELEASE_TAG.md"
+          if (-not (Test-Path -LiteralPath $NotesPath)) { throw "Missing version release notes" }
+          $ReleaseAssets = @(Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -in @(".zip", ".sha256", ".json") } | ForEach-Object { $_.FullName })
+          if ($ReleaseAssets.Count -ne 3) { throw "Expected source archive, checksum and manifest" }
+          $Existing = & gh release view "$env:RELEASE_TAG" --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($Existing | ConvertFrom-Json).isDraft) { throw "A published release must not be overwritten" }
+            & gh release upload "$env:RELEASE_TAG" @ReleaseAssets --clobber
+          }
+          else {
+            & gh release create "$env:RELEASE_TAG" @ReleaseAssets --verify-tag --draft --title "Cyber Intelligence Agency $env:RELEASE_TAG" --notes-file "$NotesPath"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub draft release failed" }

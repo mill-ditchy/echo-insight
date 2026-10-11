@@ -1,0 +1,31 @@
+name: 错误报告
+description: 提交可以复现的问题，请移除账号、Cookie、Key 和个人内容。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "请不要上传 config/secrets、历史数据或完整私人日志。可附上 scripts/doctor.py --json 的诊断报告。安全漏洞请先阅读 SECURITY.md。"
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本与 Windows 版本
+      placeholder: "v0.1.0 / Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤、预期结果和实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 已脱敏的错误信息或环境诊断
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 数据检查
+      options:
+        - label: "我已移除 Cookie、API Key、登录凭证和私人内容。"
+          required: true

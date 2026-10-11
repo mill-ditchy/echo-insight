@@ -1,0 +1,40 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.test-tmp/
+*.egg-info/
+build/
+dist/
+
+# Local credentials, preferences, followed accounts and browser session caches
+.env
+.env.*
+!.env.example
+config/*
+!config/*.example.json
+
+# Personal history, downloaded media, model weights and generated evidence
+data/*
+!data/.gitkeep
+output/*
+!output/.gitkeep
+models/
+knowledge/images/*
+!knowledge/images/.gitkeep
+
+# Local agent state, editor settings and scratch files
+.agents/
+.codex/
+.idea/
+.vscode/
+_tmp_*
+*.tmp
+*.download
+*.lock
+!requirements*.lock
+大纲
+Thumbs.db
+.DS_Store

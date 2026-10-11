@@ -1,0 +1,4 @@
+-r requirements.txt
+pip>=26.2,<27
+setuptools>=84,<85
+httpx>=0.28,<1

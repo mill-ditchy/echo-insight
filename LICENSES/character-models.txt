@@ -1,0 +1,23 @@
+Character recognition attribution
+
+CCIP preprocessing is adapted from DeepGHS imgutils, MIT licensed.
+The complete MIT notice is included in imgutils.txt.
+Source: https://github.com/deepghs/imgutils/blob/main/imgutils/metrics/ccip.py
+
+CCIP weights: deepghs/ccip_onnx, ccip-caformer-24-randaug-pruned.
+The model repository declares OpenRAIL licensing; see its model card and license.
+https://huggingface.co/deepghs/ccip_onnx
+
+WD weights and labels: SmilingWolf/wd-swinv2-tagger-v3, Apache-2.0.
+Pinned revision: 627aef95638667ddcaa3ac8ae625e88ea5b02f51
+https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3
+
+Model installation is explicit. All downloaded assets are verified against
+pinned SHA256 digests, including when the optional hf-mirror.com mirror is used.
+
+Starter character pictures come from community-maintained game asset mirrors:
+https://github.com/ryanbenson/wuthering-waves-assets
+https://github.com/Mar-7th/StarRailRes
+https://enka.network/
+Image rights remain with the respective rights holders. Each knowledge entry
+records its reference source; the mirrors are not represented as official sites.

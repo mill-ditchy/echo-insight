@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>赛博情报局</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261009-ai-test">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">⟡</div>
+        <div class="brand-copy"><strong>赛博情报局</strong><span>个人情报工作台</span></div>
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧边栏" title="收起侧边栏">‹</button>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◈</span><span class="nav-label">最新消息</span></button>
+        <button class="nav-item" data-view="sources"><span class="nav-icon">◎</span><span class="nav-label">关注列表</span></button>
+        <button class="nav-item" data-view="accounts"><span class="nav-icon">◇</span><span class="nav-label">账号管理</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span class="nav-label">设置</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection-dot"><i></i><span class="connection-label">本地服务运行中</span></div>
+        <button class="ghost-button" id="check-now"><span aria-hidden="true">↻</span><span class="check-label">立即检查更新</span></button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <h1 id="view-title">最新消息</h1>
+        </div>
+        <div class="topbar-meta">
+          <span class="status-pill" id="task-status">检查状态读取中</span>
+          <span class="clock" id="current-time"></span>
+        </div>
+      </header>
+
+      <section class="view active" id="view-dashboard">
+        <div class="hero-grid">
+          <div class="hero-card accent-card unread-summary-card" id="unread-summary-card" role="button" tabindex="0" aria-expanded="false" aria-controls="unread-panel">
+            <div class="hero-label">未读内容</div>
+            <div class="hero-number" id="unread-count">0</div>
+            <p>条内容等待查看</p>
+            <div class="unread-card-actions">
+              <span class="unread-card-hint">查看未读明细</span>
+              <button class="primary-button" id="mark-read-dashboard">全部标记为已读</button>
+            </div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">最近检查</div>
+            <div class="hero-value" id="last-check-time">暂无检查记录</div>
+            <p id="last-check-message">计划任务启动后会在这里显示结果</p>
+          </div>
+          <div class="hero-card automation-card">
+            <div class="automation-card-heading">
+              <div>
+                <div class="hero-label">自动抓取</div>
+                <div class="hero-value" id="automation-status">正在读取状态</div>
+              </div>
+              <label class="switch-control" title="开启或关闭自动抓取">
+                <input id="automation-toggle" type="checkbox" role="switch" aria-label="自动抓取" disabled>
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              </label>
+            </div>
+            <p id="automation-description">关闭后不会随开机或定时任务自动抓取，仍可手动检查。</p>
+          </div>
+        </div>
+
+        <section class="unread-panel" id="unread-panel" hidden>
+          <div class="unread-panel-heading">
+            <div><h2>未读消息</h2></div>
+            <button class="text-button" id="close-unread-panel">收起</button>
+          </div>
+          <div class="unread-list" id="unread-list"></div>
+        </section>
+
+        <div class="section-heading">
+          <div><h2>最新消息</h2></div>
+          <span class="muted" id="latest-caption"></span>
+        </div>
+        <div class="updates-list" id="dashboard-updates"></div>
+      </section>
+
+      <section class="view" id="view-sources">
+        <div class="section-heading page-heading">
+          <div><h2 id="sources-heading">选择平台</h2><p class="section-description" id="sources-description">进入平台后选择关注的博主。</p></div>
+          <button class="primary-button add-button" id="open-add-source">＋ 添加关注</button>
+        </div>
+        <button class="back-button" id="back-to-platforms" hidden>← 返回平台</button>
+        <div class="platform-grid" id="source-list"></div>
+      </section>
+
+      <section class="view" id="view-source-detail">
+        <button class="back-button" id="back-to-sources">← 返回关注列表</button>
+        <div class="detail-heading">
+          <div><h2 id="detail-source-name">博主详情</h2><p class="section-description" id="detail-source-meta"></p></div>
+          <div class="detail-actions">
+            <button class="ghost-button" id="retry-source-summaries" hidden>重试失败简报</button>
+            <button class="danger-button" id="delete-source">删除关注</button>
+          </div>
+        </div>
+        <div class="content-type-menu" id="detail-content-types" hidden></div>
+        <div class="updates-list" id="source-videos"></div>
+      </section>
+
+      <section class="view" id="view-briefing">
+        <button class="back-button" id="back-from-briefing">← 返回</button>
+        <article class="briefing-detail">
+          <div class="briefing-heading">
+            <div>
+              <h2 id="briefing-title">简报详情</h2>
+            </div>
+            <span class="briefing-source" id="briefing-source"></span>
+          </div>
+          <div class="briefing-meta" id="briefing-meta"></div>
+          <div class="briefing-summary" id="briefing-summary"></div>
+          <div class="briefing-actions">
+            <a class="primary-button briefing-original-link" id="briefing-original-link" target="_blank" rel="noreferrer">打开原内容</a>
+          </div>
+        </article>
+      </section>
+
+      <section class="view" id="view-accounts">
+        <div class="section-heading page-heading">
+          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩和知乎的本机登录状态。</p></div>
+        </div>
+        <div class="account-list" id="account-list"></div>
+        <div class="account-security-note">
+          <strong>本地安全说明</strong>
+          <p id="credential-protection">正在检查凭证保护状态…</p>
+          <p>登录凭证只用于连接对应平台，不会发送给AI模型。程序不会读取或保存登录表单中的密码。加密能防止凭证文件被直接复制后使用，但无法防住已经以你的Windows账号权限运行的恶意程序。</p>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="section-heading page-heading">
+          <div><h2>设置</h2><p class="section-description">调整自动检查节奏，并查看历史运行记录。</p></div>
+        </div>
+        <div class="settings-layout">
+          <div class="panel settings-panel display-settings-panel">
+            <div class="panel-title"><h3>字体大小</h3><span>即时生效</span></div>
+            <p class="setting-help">分别调整应用界面和简报正文，选择会保存在当前电脑。</p>
+            <div class="font-settings">
+              <label class="font-setting" for="interface-font-size">
+                <span class="font-setting-heading"><strong>界面字体</strong><output id="interface-font-size-value">14 像素</output></span>
+                <input id="interface-font-size" type="range" min="13" max="18" step="1" value="14">
+                <span class="font-scale"><span>较小</span><span>较大</span></span>
+              </label>
+              <label class="font-setting" for="briefing-font-size">
+                <span class="font-setting-heading"><strong>简报正文字体</strong><output id="briefing-font-size-value">14 像素</output></span>
+                <input id="briefing-font-size" type="range" min="13" max="22" step="1" value="14">
+                <span class="font-scale"><span>较小</span><span>较大</span></span>
+              </label>
+            </div>
+            <button class="text-button reset-font-button" id="reset-font-settings" type="button">恢复默认大小</button>
+          </div>
+          <div class="panel settings-panel ai-settings-panel">
+            <div class="panel-title"><h3>AI 接入</h3><span>自定义服务与模型</span></div>
+            <p class="setting-help">支持兼容 Chat Completions 的服务。填写服务商提供的接口地址、API Key 和模型名称即可接入。</p>
+            <p class="setting-help" id="ai-key-status">正在读取 AI 设置…</p>
+            <form class="api-key-form" id="api-key-form">
+              <div class="ai-provider-fields">
+                <div class="ai-url-field">
+                  <label for="ai-api-url">接口 URL</label>
+                  <input id="ai-api-url" type="url" required maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+                  <p class="ai-field-help">可填基础地址或完整的 /chat/completions 地址；本地服务支持 http://127.0.0.1:端口/v1。</p>
+                </div>
+                <div>
+                  <label for="ai-model">文字模型名称</label>
+                  <input id="ai-model" type="text" list="ai-model-options" required maxlength="200" autocomplete="off" spellcheck="false" placeholder="填写或选择服务商的模型 ID">
+                  <datalist id="ai-model-options"></datalist>
+                </div>
+                <div>
+                  <label for="api-key-input">API Key</label>
+                  <input id="api-key-input" type="password" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="已保存时留空可保留；切换 URL 时请填写新 Key">
+                </div>
+              </div>
+              <div class="ai-connection-actions">
+                <button class="ghost-button" id="ai-read-models" type="button">读取可用模型</button>
+                <button class="ghost-button" id="ai-test-connection" type="button">测试连接</button>
+              </div>
+              <p class="ai-field-help">测试会发送少量文字；启用画面分析时还会测试图片输入，可能消耗少量额度。测试不保存设置。已保存的 Key 留空也可测试。</p>
+              <div class="setting-result" id="ai-test-result" role="status" aria-live="polite"></div>
+              <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用视频画面分析（需要支持图片输入的模型）</label>
+              <div id="ai-vision-model-field" hidden>
+                <label for="ai-vision-model">视觉模型名称（可选）</label>
+                <input id="ai-vision-model" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="留空则使用文字模型">
+              </div>
+              <p class="ai-field-help">API Key 会加密保存在本机，不会回显。远程服务请使用 HTTPS。</p>
+              <button class="primary-button" type="submit">保存 AI 设置</button>
+              <div class="setting-result" id="api-key-result"></div>
+            </form>
+          </div>
+          <div class="panel settings-panel">
+            <div class="panel-title"><h3>视频理解</h3><span>动漫、游戏与其他视频</span></div>
+            <p class="setting-help">分段观察画面、读取屏幕文字，再核对作品和角色资料。分段分析会增加模型调用次数，结果会缓存。</p>
+            <form id="video-analysis-form" class="api-key-form">
+              <label><input id="video-analysis-enabled" type="checkbox" checked>启用分段分析</label>
+              <label for="video-input-mode">画面输入方式</label>
+              <select id="video-input-mode"><option value="images">按时间顺序发送图片（兼容图片模型）</option><option value="video">发送采样视频片段（服务必须支持 video_url）</option></select>
+              <label for="video-segment-seconds">每段目标时长（秒）</label><input id="video-segment-seconds" type="number" min="8" max="60" value="20" required>
+              <label for="video-max-segments">每个视频最多分析多少段</label><input id="video-max-segments" type="number" min="1" max="20" value="10" required>
+              <label for="video-frames-per-segment">每段最多采样多少张画面</label><input id="video-frames-per-segment" type="number" min="4" max="24" value="8" required>
+              <p class="ai-field-help">超过段数预算时会延长每段，以覆盖全片。图片和视频均经过采样；视频片段不含音轨，对白另由字幕或转写提供。</p>
+              <label><input id="video-ocr-enabled" type="checkbox" checked>读取屏幕文字</label>
+              <label><input id="video-online-lookup" type="checkbox" checked>按需查询公开百科，补充陌生作品资料</label>
+              <p class="ai-field-help">联网查询只发送作品或角色候选名称。搜索资料用于核对出处，不用于补写视频剧情。</p>
+              <button class="ghost-button" id="test-video-input" type="button">测试画面输入方式</button>
+              <p class="ai-field-help">测试使用已保存的视觉模型，会调用一次模型并可能消耗少量额度。</p>
+              <button class="primary-button" type="submit">保存视频理解设置</button><div class="setting-result" id="video-analysis-result"></div>
+            </form>
+          </div>
+          <div class="panel settings-panel">
+            <div class="panel-title"><h3>人物原型图库与多作品资料</h3><span>支持持续补充</span></div>
+            <p class="setting-help">添加带姓名、所属作品、形象版本与来源的角色参考图。系统会按视频中的人物截图检索并核对原型，也支持不同动漫、游戏和原创角色。</p>
+            <div id="media-knowledge-list"></div>
+            <form id="media-knowledge-form" class="api-key-form">
+              <label for="knowledge-name">角色或作品名称</label><input id="knowledge-name" maxlength="200" required>
+              <label for="knowledge-work">所属作品（可选）</label><input id="knowledge-work" maxlength="200">
+              <label for="knowledge-variant">形象版本</label><input id="knowledge-variant" maxlength="200" placeholder="默认服装 / 皮肤名 / 某季动画">
+              <label for="knowledge-appearance">辨识特征（可选）</label><textarea id="knowledge-appearance" rows="2" maxlength="2000" placeholder="头饰、服装纹样、独特配件等"></textarea>
+              <label for="knowledge-aliases">别名（用逗号分隔，可选）</label><input id="knowledge-aliases" maxlength="2000">
+              <label for="knowledge-text">资料正文</label><textarea id="knowledge-text" rows="4" maxlength="6000" required></textarea>
+              <label for="knowledge-source">资料来源链接</label><input id="knowledge-source" type="url" placeholder="https://…" maxlength="2048" required>
+              <label for="knowledge-images">角色参考图（可选，最多5张）</label><input id="knowledge-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+              <button class="primary-button" type="submit">添加资料</button><div class="setting-result" id="media-knowledge-result"></div>
+            </form>
+          </div>
+          <div class="panel settings-panel">
+            <div class="panel-title"><h3>自动检查间隔</h3><span>后台任务</span></div>
+            <p class="setting-help">修改后会同步更新Windows计划任务。</p>
+            <div class="interval-options" id="interval-options"></div>
+            <div class="setting-result" id="interval-result"></div>
+          </div>
+          <div class="panel settings-panel">
+            <div class="panel-title"><h3>检查历史</h3><span>最近100次</span></div>
+            <div class="history-list" id="check-history"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="source-modal" hidden>
+    <div class="modal">
+      <button class="modal-close" id="close-source-modal">×</button>
+      <h2>添加关注</h2>
+      <p class="section-description">添加后会读取最近3条内容用于详情页展示，但不会把它们计入未读更新。</p>
+      <form id="source-form">
+        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option></select></label>
+        <label><span class="form-label" id="source-id-label">账号编号</span><input id="source-uid" inputmode="numeric" placeholder="例如：21131684" required></label>
+        <label id="zhihu-cookie-field" hidden><span class="form-label">手动填写知乎 Cookie（备用）</span><textarea id="source-cookie" rows="3" placeholder="建议先在账号管理中登录；也可在这里粘贴 Cookie"></textarea></label>
+        <label><span class="form-label">备注名称（可选）</span><input id="source-name" placeholder="不填写则使用博主名称"></label>
+        <div class="form-error" id="source-form-error"></div>
+        <button class="primary-button full-button" type="submit">保存并开始关注</button>
+      </form>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="account-modal" hidden>
+    <div class="modal qr-modal">
+      <button class="modal-close" id="close-account-modal">×</button>
+      <h2>B站扫码登录</h2>
+      <p class="section-description">请使用哔哩哔哩手机客户端扫描二维码，并在手机上确认登录。</p>
+      <div class="qr-frame"><img id="bilibili-qr" alt="B站登录二维码"></div>
+      <div class="qr-status" id="qr-status">正在生成二维码…</div>
+      <button class="ghost-button full-button" id="refresh-qr">重新生成二维码</button>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="zhihu-login-modal" hidden>
+    <div class="modal">
+      <button class="modal-close" id="close-zhihu-login-modal" type="button">×</button>
+      <h2>登录知乎</h2>
+      <p class="section-description">在单独打开的知乎窗口完成登录，然后回到这里保存登录状态。</p>
+      <div class="qr-status" id="zhihu-login-status">准备打开知乎登录窗口…</div>
+      <div class="modal-actions zhihu-login-actions">
+        <button class="ghost-button" id="reopen-zhihu-login" type="button">重新打开窗口</button>
+        <button class="primary-button" id="finish-zhihu-login" type="button">保存登录状态</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="delete-source-modal" hidden>
+    <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title">
+      <button class="modal-close" id="close-delete-source-modal" type="button" title="关闭">×</button>
+      <h2 id="delete-source-title">删除关注</h2>
+      <p class="section-description" id="delete-source-message"></p>
+      <p class="retention-note">已经生成的历史简报和本地缓存会保留，之后不再自动抓取这位博主。</p>
+      <div class="modal-actions">
+        <button class="ghost-button" id="cancel-delete-source" type="button">取消</button>
+        <button class="danger-button danger-button-solid" id="confirm-delete-source" type="button">确认删除</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/static/app.js?v=20261010-video-understanding"></script>
+</body>
+</html>

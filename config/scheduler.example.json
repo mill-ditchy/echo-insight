@@ -1,0 +1,6 @@
+{
+  "interval_hours": 3,
+  "retry_minutes": 5,
+  "retry_attempts": 1,
+  "enabled": false
+}
