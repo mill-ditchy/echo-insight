@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>赛博情报局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261009-ai-test">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-text-only">
 </head>
 <body>
   <div class="app-shell">
@@ -117,12 +117,14 @@
           <div class="briefing-meta" id="briefing-meta"></div>
           <div class="briefing-summary" id="briefing-summary"></div>
           <div id="briefing-note" hidden>
-            <div id="briefing-note-actions" class="analysis-actions"></div>
-            <p class="setting-help">快速分析最多读取前6张；完整分析最多读取30张，模型用量会随图片数量增加。摘要引用可点击核对原图。</p>
-            <div class="note-image-grid" id="briefing-note-images"></div>
-            <p class="setting-help" id="briefing-note-scope"></p>
-            <div id="briefing-note-evidence"></div>
-            <details class="note-original"><summary>查看笔记原文与话题</summary><div id="briefing-note-body"></div></details>
+            <details class="note-original" id="briefing-note-original"><summary>查看笔记原文与话题</summary><div id="briefing-note-body"></div></details>
+            <details class="note-original" id="briefing-note-evidence-details"><summary>查看摘要依据</summary><div id="briefing-note-evidence"></div></details>
+            <details class="note-original" id="briefing-note-options">
+              <summary>分析选项</summary>
+              <p class="setting-help" id="briefing-note-scope"></p>
+              <p class="setting-help">后台会结合正文与图片提炼信息。快速分析最多读取前6张；完整分析最多读取30张，模型用量会随图片数量增加。</p>
+              <div id="briefing-note-actions" class="analysis-actions"></div>
+            </details>
           </div>
           <div class="briefing-actions">
             <a class="primary-button briefing-original-link" id="briefing-original-link" target="_blank" rel="noreferrer">打开原内容</a>
@@ -300,13 +302,6 @@
       </div>
     </div>
   </div>
-  <div class="modal-backdrop" id="note-image-modal" hidden>
-    <div class="modal note-image-modal-content">
-      <button class="modal-close" id="close-note-image-modal" type="button">×</button>
-      <h2 id="note-image-modal-title">笔记原图</h2>
-      <img id="note-image-modal-picture" alt="笔记原图">
-    </div>
-  </div>
   <div class="modal-backdrop" id="delete-source-modal" hidden>
     <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title">
       <button class="modal-close" id="close-delete-source-modal" type="button" title="关闭">×</button>
@@ -320,6 +315,6 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=20261010-video-understanding"></script>
+  <script src="/static/app.js?v=20261011-text-only"></script>
 </body>
 </html>

@@ -95,43 +95,17 @@ function updateKey(item) {
   return `${item.platform || ""}:${item.article_id || ""}`;
 }
 
-function noteImageUrl(item, index) {
-  if (item.platform !== "xiaohongshu" || !/^xhs_[a-f0-9]{24}$/.test(item.article_id || "")) return "";
-  return `/api/notes/${encodeURIComponent(item.article_id)}/images/${index}`;
-}
-
-const noteImageCache = new Map();
-let noteImageObserver;
-function loadNoteImages(container) {
-  if (!container?.querySelectorAll) return;
-  const load = async (element) => {
-    const endpoint = element.dataset.noteImage;
-    if (!endpoint || element.dataset.loading) return;
-    element.dataset.loading = "1";
-    try {
-      if (!noteImageCache.has(endpoint)) noteImageCache.set(endpoint, fetch(endpoint, {headers: {"X-Cyber-Request": "1"}})
-        .then(response => { if (!response.ok) throw new Error("图片读取失败"); return response.blob(); })
-        .then(blob => URL.createObjectURL(blob)));
-      element.src = await noteImageCache.get(endpoint);
-    } catch (_error) {
-      noteImageCache.delete(endpoint);
-      element.alt = "图片未能读取，请打开原笔记查看";
-      element.title = element.alt;
-    }
-  };
-  if (typeof IntersectionObserver !== "undefined" && !noteImageObserver) noteImageObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) if (entry.isIntersecting) { noteImageObserver.unobserve(entry.target); load(entry.target); }
-  }, {rootMargin: "150px"});
-  container.querySelectorAll('[data-note-image]').forEach(element => noteImageObserver ? noteImageObserver.observe(element) : load(element));
+function noteSummaryText(value) {
+  // Keep source markers in the stored summary; the reading view shows clean prose.
+  return normalizeDisplaySummary(value).replace(/\[(?:图片\s*\d+|正文)\]/g, "").trim();
 }
 
 function summaryText(item) {
   if (item.platform === "xiaohongshu") {
-    if (item.ai_summary) return normalizeDisplaySummary(item.ai_summary);
+    if (item.ai_summary) return noteSummaryText(item.ai_summary);
     if (item.ai_status === "error") return `图文简报生成失败：${item.ai_error || "请重试"}`;
-    if (item.detail_status === "preview_only") return item.fetch_warning || "目前只取得标题和封面，请登录后重试读取正文。";
-    const labels = {note_reading: "正在重新读取笔记正文与图片…", note_images: "正在读取笔记图片…", note_ocr: "正在识别图片文字…", note_batches: "正在按顺序分批分析图片…", summarizing: "正在结合正文与图片生成简报…"};
-    return labels[item.ai_stage] || "等待阅读正文与图片，生成图文简报…";
+    if (item.detail_status === "preview_only") return item.fetch_warning || "目前只取得标题，请登录后重试读取正文。";
+    return item.ai_stage === "summarizing" ? "正在生成简报…" : item.ai_status === "processing" ? "正在读取笔记内容…" : "等待生成简报…";
   }
   const stageLabels = {
     waiting: "等待处理：即将解析视频并生成AI简报…",
@@ -164,22 +138,21 @@ function updateCard(item) {
   else if (item.ai_summary) analysisLabel = "纯文字";
   if (item.ai_segment_count) analysisLabel = `${item.ai_input_mode === "video" ? "采样视频" : "分段画面"} · ${item.ai_segment_count}段 · ${item.ai_frame_count || 0}帧`;
   if (item.ai_completeness === "partial") analysisLabel += " · 分析不完整";
-  if (item.platform === "xiaohongshu" && item.ai_summary) analysisLabel = `${item.ai_note_reading_mode === "full" ? "完整模式" : "快速模式"} · ${item.ai_analysis_mode === "note_visual" ? "图文理解" : "正文与图片文字"} · 已读 ${item.ai_frame_count || 0}/${item.image_count || 0} 张${item.ai_completeness === "partial" ? " · 读取不完整" : ""}`;
-  const analysisNote = [item.fetch_warning, item.visual_error, ...(item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
+  if (item.platform === "xiaohongshu" && item.ai_summary) analysisLabel = item.ai_completeness === "partial" ? "摘要范围有限" : "摘要已生成";
+  const analysisNote = [item.fetch_warning, item.visual_error, ...(item.platform === "xiaohongshu" ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
-  const reanalyzeButton = item.platform === "xiaohongshu" ? noteAnalysisButtons(item) : item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
+  const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
   const summaryToggle = String(summary).length > 180 ? `<button class="text-button summary-toggle">展开简报</button>` : "";
   const originalLabel = item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
   const originalUrl = safeExternalUrl(item.link);
   const originalLink = originalUrl ? `<a class="original-link" href="${escapeHtml(originalUrl)}" target="_blank" rel="noopener noreferrer">${originalLabel}</a>` : "";
   const evidenceDetails = item.ai_segment_count ? `<details class="video-evidence" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}"><summary>查看分段分析依据与资料出处</summary><div class="video-evidence-body setting-help"></div></details>` : "";
   const contentBadge = item.content_type_label ? `<span class="analysis-badge">${escapeHtml(item.content_type_label)}</span>` : "";
-  const noteCover = item.platform === "xiaohongshu" && item.images?.length ? `<img class="note-cover" data-note-image="${escapeHtml(noteImageUrl(item, 0))}" alt="笔记封面" loading="lazy">` : "";
   return `<article class="update-card ${item.read ? "" : "unread"}" data-update-key="${escapeHtml(updateKey(item))}">
     <div class="update-top"><h3 class="update-title"><button class="update-title-button briefing-link" type="button">${escapeHtml(item.title)}</button></h3><span class="update-source">${escapeHtml(sourceLabel)}</span></div>
     <div class="update-meta">发布时间：${escapeHtml(item.published || "未知")} · 检测于：${escapeHtml(formatTime(item.detected_at))}</div>
-    ${noteCover}<div class="update-summary">${escapeHtml(summary)}</div>
+    <div class="update-summary">${escapeHtml(summary)}</div>
     ${analysisWarning}
     ${evidenceDetails}
     <div class="analysis-footer"><div class="analysis-context">${contentBadge}${analysisBadge}${originalLink}</div><div class="analysis-actions">${summaryToggle}${reanalyzeButton}</div></div>
@@ -188,7 +161,6 @@ function updateCard(item) {
 
 function renderUpdates(container, items, emptyText) {
   container.innerHTML = items.length ? items.map(updateCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
-  loadNoteImages(container);
   container.querySelectorAll(".reanalyze-button").forEach((button) => button.addEventListener("click", reanalyzeVideo));
   container.querySelectorAll(".video-evidence").forEach((element) => element.addEventListener("toggle", async () => {
     if (!element.open || element.dataset.loaded) return;
@@ -260,14 +232,6 @@ async function refreshNoteBriefing() {
   }
 }
 
-function noteCitations(text, item) {
-  return escapeHtml(text).replace(/\[图片\s*(\d+)\]/g, (match, value) => {
-    const number = Number(value);
-    return number >= 1 && number <= (item.images || []).length && (item.ai_image_numbers || []).includes(number)
-      ? `<button type="button" class="note-citation text-button" data-note-number="${number}">${match}</button>` : match;
-  });
-}
-
 function collectionStatusText(status = {}) {
   return [status.message || "尚未检查", status.last_success_at ? `最近成功：${formatTime(status.last_success_at)}` : "尚无成功检查记录", status.pending_count ? `待补抓 ${status.pending_count} 篇` : "", status.scan_warning || ""].filter(Boolean).join(" · ");
 }
@@ -331,7 +295,6 @@ function renderBriefing(item) {
   $("#briefing-title").textContent = item.title || "简报详情";
   $("#briefing-source").textContent = item.source || "未知作者";
   $("#briefing-meta").textContent = `发布时间：${item.published || "未知"} · 检测时间：${formatTime(item.detected_at)}`;
-  if (item.platform === "xiaohongshu") $("#briefing-meta").textContent += ` · ${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 已读 ${item.ai_frame_count || 0}/${item.image_count || 0} 张${item.ai_completeness === "partial" ? " · 读取不完整" : ""}`;
   $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? (item.platform === "xiaohongshu" ? "\n\n图文读取范围有限，请结合原笔记查看。" : "\n\n画面分析不完整，请结合原视频查看。") : "")
     + (item.last_attempt_status === "error" && item.ai_summary ? `\n\n最近一次重新分析失败，当前展示上次简报：${item.last_attempt_error || "请重试"}` : "");
   const original = $("#briefing-original-link");
@@ -341,25 +304,15 @@ function renderBriefing(item) {
   const note = $("#briefing-note");
   note.hidden = item.platform !== "xiaohongshu";
   if (!note.hidden) {
-    const summary = $("#briefing-summary");
-    summary.innerHTML = noteCitations(summary.textContent, item);
-    summary.querySelectorAll?.(".note-citation").forEach(button => button.addEventListener("click", () => $("#note-image-" + button.dataset.noteNumber)?.scrollIntoView({behavior: "smooth", block: "center"})));
     const actions = $("#briefing-note-actions");
     actions.innerHTML = noteAnalysisButtons(item);
     actions.querySelectorAll?.(".reanalyze-button").forEach(button => button.addEventListener("click", reanalyzeVideo));
-    $("#briefing-note-images").innerHTML = (item.images || []).slice(0, 60).map((_, index) => `<figure id="note-image-${index + 1}"><img data-note-image="${escapeHtml(noteImageUrl(item, index))}" alt="笔记图片 ${index + 1}" loading="lazy"><figcaption>图片 ${index + 1}</figcaption></figure>`).join("");
-    loadNoteImages($("#briefing-note-images"));
-    $("#briefing-note-images").querySelectorAll?.("img").forEach((img, index) => img.addEventListener("click", () => {
-      if (!img.src.startsWith("blob:")) return;
-      $("#note-image-modal-picture").src = img.src;
-      $("#note-image-modal-title").textContent = `图片 ${index + 1} · 原图`;
-      $("#note-image-modal").hidden = false;
-      $("#note-image-modal-picture").parentElement.scrollTop = 0;
-    }));
     $("#briefing-note-scope").textContent = `${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 共 ${item.image_count || 0} 张，已读 ${item.ai_frame_count || 0} 张。${(item.ai_analysis_warnings || []).join("；") || item.fetch_warning || ""}`;
-    $("#briefing-note-evidence").innerHTML = (item.ai_note_evidence || []).map(row => row.type === "image"
-      ? `<details class="note-original"><summary>图片 ${Number(row.number)} · 识别文字${row.status === "error" ? "（读取失败）" : row.status === "ocr_error" ? "（识别未完成）" : ""}</summary><div>${escapeHtml(row.ocr || "未识别到文字，请核对原图")}</div></details>`
-      : `<details class="note-original"><summary>图片 ${(row.numbers || []).map(Number).join("、")} · 模型合并解读</summary><div>${escapeHtml(row.text || "")}</div></details>`).join("") || `<p class="setting-help">这份旧简报尚无图片依据，可重新分析生成。</p>`;
+    const evidence = item.ai_note_evidence || [];
+    $("#briefing-note-evidence-details").hidden = !evidence.length;
+    $("#briefing-note-evidence").textContent = evidence.map(row => row.type === "image"
+      ? `来源：第 ${Number(row.number)} 张中的文字${row.status === "error" ? "（读取失败）" : row.status === "ocr_error" ? "（识别未完成）" : ""}\n${row.ocr || "未识别到文字"}`
+      : `来源：第 ${(row.numbers || []).map(Number).join("、")} 张的内容解读\n${row.text || ""}`).join("\n\n");
     $("#briefing-note-body").textContent = (item.description || "没有读取到正文") + ((item.tags || []).length ? `\n\n话题：${item.tags.join("、")}` : "");
   }
   original.hidden = !originalUrl;
@@ -369,6 +322,7 @@ async function openBriefing(item) {
   if (!item.read && !(await markItemRead(item))) return;
   state.briefingBack = state.currentView === "source-detail" ? "source-detail" : "dashboard";
   state.briefingItem = item;
+  for (const selector of ["#briefing-note-original", "#briefing-note-evidence-details", "#briefing-note-options"]) $(selector).open = false;
   renderBriefing(item);
   setView("briefing");
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1111,8 +1065,6 @@ function bindEvents() {
   $("#close-zhihu-login-modal").addEventListener("click", closeZhihuLoginModal);
   $("#zhihu-login-modal").addEventListener("click", (event) => { if (event.target.id === "zhihu-login-modal") closeZhihuLoginModal(); });
   $("#finish-xiaohongshu-login").addEventListener("click", finishXiaohongshuLogin);
-  $("#close-note-image-modal").addEventListener("click", () => { $("#note-image-modal").hidden = true; });
-  $("#note-image-modal").addEventListener("click", event => { if (event.target.id === "note-image-modal") $("#note-image-modal").hidden = true; });
   $("#reopen-xiaohongshu-login").addEventListener("click", startXiaohongshuLogin);
   $("#close-xiaohongshu-login-modal").addEventListener("click", closeXiaohongshuLoginModal);
   $("#xiaohongshu-login-modal").addEventListener("click", (event) => { if (event.target.id === "xiaohongshu-login-modal") closeXiaohongshuLoginModal(); });

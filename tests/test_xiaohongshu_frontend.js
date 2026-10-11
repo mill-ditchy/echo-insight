@@ -15,10 +15,11 @@ const item = {platform: 'xiaohongshu', article_id: 'xhs_' + 'a'.repeat(24),
   ai_completeness: 'partial', ai_analysis_warnings: ['只分析前6张'], link: 'https://www.xiaohongshu.com/explore/' + 'a'.repeat(24)};
 const card = context.updateCard(item);
 assert.ok(card.includes('打开原笔记'));
-assert.ok(card.includes('重新分析图文'));
-assert.ok(card.includes('已读 6/9 张'));
-assert.ok(card.includes('读取不完整'));
-assert.ok(card.includes('/api/notes/xhs_'));
+assert.ok(!card.includes('重新分析图文'));
+assert.ok(card.includes('摘要范围有限'));
+assert.ok(!card.includes('已读 6/9 张'));
+assert.ok(!card.includes('/api/notes/xhs_'));
+assert.ok(!card.includes('<img'));
 assert.ok(!card.includes('https://example.com/ignored'));
 assert.ok(!card.includes('<img src=x'));
 context.renderBriefing(item);
@@ -26,10 +27,9 @@ assert.equal(nodes.get('#briefing-note').hidden, false);
 assert.equal(nodes.get('#briefing-note-body').textContent, '正文<内容>\n\n话题：话题');
 assert.equal(nodes.get('#briefing-original-link').textContent, '打开小红书原笔记');
 assert.ok(nodes.get('#briefing-summary').textContent.includes('原笔记'));
-assert.equal(context.noteImageUrl({...item, article_id: '../secret'}, 0), '');
-assert.ok(context.summaryText({...item, ai_summary: '', ai_status: 'processing', ai_stage: 'note_ocr'}).includes('图片文字'));
+assert.ok(context.summaryText({...item, ai_summary: '', ai_status: 'processing', ai_stage: 'note_ocr'}).includes('正在读取笔记内容'));
 assert.ok(context.summaryText({...item, ai_summary: '', ai_status: 'error', ai_error: '需要登录'}).includes('需要登录'));
-assert.ok(context.summaryText({...item, ai_summary: '', detail_status: 'preview_only'}).includes('标题和封面'));
+assert.ok(context.summaryText({...item, ai_summary: '', detail_status: 'preview_only'}).includes('只取得标题'));
 context.renderBriefing({platform: 'bilibili'});
 assert.equal(nodes.get('#briefing-note').hidden, true);
 assert.equal(context.platformLabel('xiaohongshu'), '小红书');
@@ -39,20 +39,34 @@ const complete = {...item, images: Array(18).fill('ignored'), image_count: 18, a
   ai_note_reading_mode: 'full', ai_image_numbers: Array.from({length: 18}, (_, i) => i + 1),
   ai_note_evidence: [{type: 'image', number: 18, ocr: '<img onerror=alert(1)>'},
                      {type: 'batch', numbers: [13, 18], text: '<script>bad</script>'}]};
-assert.ok(context.updateCard(complete).includes('完整模式'));
+assert.ok(context.updateCard(complete).includes('摘要已生成'));
 assert.ok(context.noteAnalysisButtons(complete).includes('data-reading-mode="full"'));
 assert.ok(context.noteAnalysisButtons({...complete, last_attempt_status: 'processing'}).includes('disabled'));
 context.renderBriefing(complete);
-assert.ok(nodes.get('#briefing-note-images').innerHTML.includes('/images/17'));
-assert.ok(nodes.get('#briefing-note-images').innerHTML.includes('id="note-image-18"'));
-assert.ok(nodes.get('#briefing-summary').innerHTML.includes('data-note-number="18"'));
-assert.ok(!nodes.get('#briefing-summary').innerHTML.includes('<script>'));
-assert.ok(!nodes.get('#briefing-note-evidence').innerHTML.includes('<img onerror'));
-assert.ok(nodes.get('#briefing-note-evidence').innerHTML.includes('图片 13、18'));
+assert.equal(nodes.get('#briefing-summary').textContent, '原文事实。图片结论。<script>bad</script>');
+assert.equal(nodes.get('#briefing-summary').innerHTML, undefined);
+assert.ok(nodes.get('#briefing-note-evidence').textContent.includes('<img onerror=alert(1)>'));
+assert.equal(nodes.get('#briefing-note-evidence').innerHTML, undefined);
+assert.ok(nodes.get('#briefing-note-evidence').textContent.includes('第 13、18 张'));
+assert.equal(nodes.get('#briefing-note-evidence-details').hidden, false);
+assert.ok(!nodes.get('#briefing-meta').textContent.includes('已读'));
+assert.ok(!nodes.has('#briefing-note-images'));
 assert.ok(nodes.get('#briefing-note-scope').textContent.includes('已读 18 张'));
-assert.ok(!context.noteCitations('[图片30]', complete).includes('data-note-number'));
+assert.equal(complete.ai_summary, '原文事实[正文]。图片结论[图片18]。<script>bad</script>');
+assert.equal(context.noteSummaryText('**观点**[图片1][图片 2]。\n来源[正文]。'), '观点。\n来源。');
+context.renderBriefing({...complete, ai_note_evidence: []});
+assert.equal(nodes.get('#briefing-note-evidence-details').hidden, true);
 assert.ok(context.collectionStatusText({message: '登录已失效', pending_count: 8}).includes('待补抓 8 篇'));
 assert.ok(!source.includes('最多展示和分析前6张'));
+assert.ok(!source.includes('data-note-image'));
+assert.ok(!source.includes('note-image-modal'));
+const html = fs.readFileSync(path.join(__dirname, '../web/static/index.html'), 'utf8');
+assert.ok(!html.includes('note-image-grid'));
+assert.ok(!html.includes('note-image-modal'));
+for (const id of ['briefing-note-original', 'briefing-note-evidence-details', 'briefing-note-options']) {
+  assert.ok(html.includes(`id="${id}"`));
+  assert.ok(!new RegExp(`<details[^>]*id="${id}"[^>]*\\bopen\\b`).test(html));
+}
 
 // Run the page-state extraction against realistic Vue state shapes; private state is excluded.
 const browserSource = fs.readFileSync(path.join(__dirname, '../src/platforms/xiaohongshu_browser.py'), 'utf8');
@@ -75,17 +89,4 @@ const detail = vm.runInNewContext(expression('DETAIL_EXPRESSION'), page);
 assert.equal(detail.detail_available, true);
 assert.equal(detail.desc, '正文');
 assert.equal(detail.imageList.length, 1);
-console.log('Xiaohongshu UI and page extraction checks passed.');
-
-(async () => {
-  const endpoint = '/api/notes/xhs_' + id + '/images/0';
-  let sent;
-  context.fetch = async (url, options) => {sent = {url, options}; return {ok: true, blob: async () => ({})};};
-  context.URL = class extends URL { static createObjectURL() {return 'blob:test-local-image';} };
-  const element = {dataset: {noteImage: endpoint}, src: ''};
-  context.loadNoteImages({querySelectorAll: () => [element]});
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  assert.equal(sent.options.headers['X-Cyber-Request'], '1');
-  assert.equal(element.src, 'blob:test-local-image');
-  console.log('Protected image loading header and local blob rendering passed.');
-})().catch(error => {console.error(error); process.exitCode = 1;});
+console.log('Xiaohongshu text-only UI and page extraction checks passed.');
