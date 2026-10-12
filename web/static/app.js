@@ -95,13 +95,17 @@ function updateKey(item) {
   return `${item.platform || ""}:${item.article_id || ""}`;
 }
 
+function isImageNote(item) {
+  return item.platform === "xiaohongshu" || (item.platform === "douyin" && item.content_type === "image_note");
+}
+
 function noteSummaryText(value) {
   // Keep source markers in the stored summary; the reading view shows clean prose.
   return normalizeDisplaySummary(value).replace(/\[(?:图片\s*\d+|正文)\]/g, "").trim();
 }
 
 function summaryText(item) {
-  if (item.platform === "xiaohongshu") {
+  if (isImageNote(item)) {
     if (item.ai_summary) return noteSummaryText(item.ai_summary);
     if (item.ai_status === "error") return `图文简报生成失败：${item.ai_error || "请重试"}`;
     if (item.detail_status === "preview_only") return item.fetch_warning || "目前只取得标题，请登录后重试读取正文。";
@@ -110,6 +114,8 @@ function summaryText(item) {
   const stageLabels = {
     waiting: "等待处理：即将解析视频并生成AI简报…",
     subtitle: "正在读取视频字幕…",
+    media_download: "正在读取视频内容…",
+    note_reading: "正在重新读取作品…",
     transcribing_and_frames: "正在同时进行语音转写和关键帧分析…",
     transcribing: "正在进行语音转写…",
     frames: "正在分析视频关键帧…",
@@ -138,16 +144,16 @@ function updateCard(item) {
   else if (item.ai_summary) analysisLabel = "纯文字";
   if (item.ai_segment_count) analysisLabel = `${item.ai_input_mode === "video" ? "采样视频" : "分段画面"} · ${item.ai_segment_count}段 · ${item.ai_frame_count || 0}帧`;
   if (item.ai_completeness === "partial") analysisLabel += " · 分析不完整";
-  if (item.platform === "xiaohongshu" && item.ai_summary) analysisLabel = item.ai_completeness === "partial" ? "摘要范围有限" : "摘要已生成";
-  const analysisNote = [item.fetch_warning, item.visual_error, ...(item.platform === "xiaohongshu" ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
+  if (["xiaohongshu", "douyin"].includes(item.platform) && item.ai_summary) analysisLabel = item.ai_completeness === "partial" ? "摘要范围有限" : "摘要已生成";
+  const analysisNote = [item.fetch_warning, item.visual_error, ...(["xiaohongshu", "douyin"].includes(item.platform) ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
   const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
   const summaryToggle = String(summary).length > 180 ? `<button class="text-button summary-toggle">展开简报</button>` : "";
-  const originalLabel = item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
+  const originalLabel = item.platform === "douyin" ? "打开抖音原作品 ↗" : item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
   const originalUrl = safeExternalUrl(item.link);
   const originalLink = originalUrl ? `<a class="original-link" href="${escapeHtml(originalUrl)}" target="_blank" rel="noopener noreferrer">${originalLabel}</a>` : "";
-  const evidenceDetails = item.ai_segment_count ? `<details class="video-evidence" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}"><summary>查看分段分析依据与资料出处</summary><div class="video-evidence-body setting-help"></div></details>` : "";
+  const evidenceDetails = item.platform === "bilibili" && item.ai_segment_count ? `<details class="video-evidence" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}"><summary>查看分段分析依据与资料出处</summary><div class="video-evidence-body setting-help"></div></details>` : "";
   const contentBadge = item.content_type_label ? `<span class="analysis-badge">${escapeHtml(item.content_type_label)}</span>` : "";
   return `<article class="update-card ${item.read ? "" : "unread"}" data-update-key="${escapeHtml(updateKey(item))}">
     <div class="update-top"><h3 class="update-title"><button class="update-title-button briefing-link" type="button">${escapeHtml(item.title)}</button></h3><span class="update-source">${escapeHtml(sourceLabel)}</span></div>
@@ -198,6 +204,7 @@ function renderUpdates(container, items, emptyText) {
 
 async function reanalyzeVideo(event) {
   const button = event.currentTarget;
+  const originalText = button.textContent;
   button.disabled = true;
   button.textContent = "正在加入队列…";
   try {
@@ -209,15 +216,16 @@ async function reanalyzeVideo(event) {
   } catch (error) {
     showToast(error.message, true);
     button.disabled = false;
-    button.textContent = button.dataset.platform === "xiaohongshu" ? (button.dataset.readingMode === "full" ? "完整分析图文" : "重新分析图文（快速）") : "重新视觉分析";
+    button.textContent = originalText;
   }
 }
 
 function noteAnalysisButtons(item) {
   if (!item.link) return "";
   const busy = ["pending", "processing"].includes(item.last_attempt_status) || ["pending", "processing"].includes(item.ai_status);
+  if (item.platform === "douyin" && item.content_type === "video") return `<button type="button" class="text-button reanalyze-button" data-platform="douyin" data-article-id="${escapeHtml(item.article_id)}" ${busy ? "disabled" : ""}>${busy ? "正在分析视频…" : "重新分析视频"}</button>`;
   if (busy) return `<button class="text-button" type="button" disabled>正在分析图文…</button>`;
-  return ["quick", "full"].map(mode => `<button type="button" class="text-button reanalyze-button" data-platform="xiaohongshu" data-article-id="${escapeHtml(item.article_id)}" data-reading-mode="${mode}" ${busy ? "disabled" : ""}>${busy ? "正在分析…" : mode === "full" ? "完整分析图文" : "重新分析图文（快速）"}</button>`).join("");
+  return ["quick", "full"].map(mode => `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" data-reading-mode="${mode}" ${busy ? "disabled" : ""}>${busy ? "正在分析…" : mode === "full" ? "完整分析图文" : "重新分析图文（快速）"}</button>`).join("");
 }
 
 async function refreshNoteBriefing() {
@@ -295,19 +303,21 @@ function renderBriefing(item) {
   $("#briefing-title").textContent = item.title || "简报详情";
   $("#briefing-source").textContent = item.source || "未知作者";
   $("#briefing-meta").textContent = `发布时间：${item.published || "未知"} · 检测时间：${formatTime(item.detected_at)}`;
-  $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? (item.platform === "xiaohongshu" ? "\n\n图文读取范围有限，请结合原笔记查看。" : "\n\n画面分析不完整，请结合原视频查看。") : "")
+  $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? (isImageNote(item) ? "\n\n图文读取范围有限，请结合原笔记查看。" : "\n\n画面分析不完整，请结合原视频查看。") : "")
     + (item.last_attempt_status === "error" && item.ai_summary ? `\n\n最近一次重新分析失败，当前展示上次简报：${item.last_attempt_error || "请重试"}` : "");
   const original = $("#briefing-original-link");
   const originalUrl = safeExternalUrl(item.link);
   original.href = originalUrl || "#";
-  original.textContent = item.platform === "xiaohongshu" ? "打开小红书原笔记" : item.platform === "zhihu" ? "打开知乎原内容" : "打开B站原视频";
+  original.textContent = item.platform === "douyin" ? "打开抖音原作品" : item.platform === "xiaohongshu" ? "打开小红书原笔记" : item.platform === "zhihu" ? "打开知乎原内容" : "打开B站原视频";
   const note = $("#briefing-note");
-  note.hidden = item.platform !== "xiaohongshu";
+  note.hidden = !["xiaohongshu", "douyin"].includes(item.platform);
   if (!note.hidden) {
     const actions = $("#briefing-note-actions");
     actions.innerHTML = noteAnalysisButtons(item);
     actions.querySelectorAll?.(".reanalyze-button").forEach(button => button.addEventListener("click", reanalyzeVideo));
-    $("#briefing-note-scope").textContent = `${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 共 ${item.image_count || 0} 张，已读 ${item.ai_frame_count || 0} 张。${(item.ai_analysis_warnings || []).join("；") || item.fetch_warning || ""}`;
+    $("#briefing-note-image-help").hidden = !isImageNote(item);
+    $("#briefing-note-original > summary").textContent = item.platform === "douyin" ? "查看作品配文与话题" : "查看笔记原文与话题";
+    $("#briefing-note-scope").textContent = !isImageNote(item) ? (item.ai_analysis_warnings || []).join("；") || "结合视频语音、画面文字和关键画面提炼内容。" : `${item.ai_note_reading_mode === "full" ? "完整" : "快速"}模式 · 共 ${item.image_count || 0} 张，已读 ${item.ai_frame_count || 0} 张。${(item.ai_analysis_warnings || []).join("；") || item.fetch_warning || ""}`;
     const evidence = item.ai_note_evidence || [];
     $("#briefing-note-evidence-details").hidden = !evidence.length;
     $("#briefing-note-evidence").textContent = evidence.map(row => row.type === "image"
@@ -325,6 +335,7 @@ async function openBriefing(item) {
   for (const selector of ["#briefing-note-original", "#briefing-note-evidence-details", "#briefing-note-options"]) $(selector).open = false;
   renderBriefing(item);
   setView("briefing");
+  if (["pending", "processing"].includes(item.ai_status) || item.last_attempt_status === "processing") setTimeout(() => refreshNoteBriefing().catch(error => showToast(error.message, true)), 5000);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -340,13 +351,14 @@ async function backFromBriefing() {
 }
 
 function platformLabel(platform) {
-  return ({zhihu: "知乎", bilibili: "哔哩哔哩", xiaohongshu: "小红书"})[platform] || platform;
+  return ({zhihu: "知乎", bilibili: "哔哩哔哩", xiaohongshu: "小红书", douyin: "抖音"})[platform] || platform;
 }
 
 function renderPlatforms(container, sources) {
   const platforms = [
     { key: "bilibili", label: "哔哩哔哩", mark: "B", caption: "视频与AI简报" },
     { key: "zhihu", label: "知乎", mark: "知", caption: "回答、文章、想法与视频" },
+    { key: "douyin", label: "抖音", mark: "抖", caption: "视频、图文与AI简报" },
     { key: "xiaohongshu", label: "小红书", mark: "红", caption: "图文笔记与AI简报" },
   ];
   container.innerHTML = platforms.map((platform) => {
@@ -365,7 +377,7 @@ function renderSources(container, sources) {
   container.innerHTML = sources.length ? sources.map((source) => `<article class="source-card" data-platform="${escapeHtml(source.platform)}" data-uid="${escapeHtml(source.uid)}">
     <div class="source-card-top"><h3 class="source-name">${escapeHtml(source.name)}</h3><span class="source-platform">${escapeHtml(source.category || "B站")}</span></div>
     <div class="source-uid">${source.platform === "zhihu" ? "账号" : "账号编号"} · ${escapeHtml(source.uid)}</div>
-    ${source.platform === "xiaohongshu" ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
+    ${["xiaohongshu", "douyin"].includes(source.platform) ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
     <div class="source-stats"><div><strong>${source.new_video_count || 0}</strong>已收录内容</div><div><strong class="source-unread-count">${source.unread_count || 0}</strong>未读</div></div>
   </article>`).join("") : `<div class="empty-state">还没有关注对象，点击右上角添加第一位博主。</div>`;
   $$(".source-card").forEach((card) => card.addEventListener("click", () => loadSourceDetail(card.dataset.platform, card.dataset.uid)));
@@ -376,7 +388,7 @@ function showPlatformSources(platform) {
   state.selectedPlatform = platform;
   const sources = state.sources.filter((source) => source.platform === platform);
   $("#sources-heading").textContent = platformLabel(platform);
-  $("#sources-description").textContent = platform === "xiaohongshu" ? "选择博主，查看图文笔记、图片和AI简报。" : platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
+  $("#sources-description").textContent = platform === "douyin" ? "选择博主，查看视频与图文的文字简报。" : platform === "xiaohongshu" ? "选择博主，查看图文笔记和AI简报。" : platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
   $("#back-to-platforms").hidden = false;
   $("#source-list").className = "source-grid";
   renderSources($("#source-list"), sources);
@@ -457,16 +469,16 @@ async function loadAccounts() {
     const accounts = data.accounts || [];
     $("#account-list").innerHTML = accounts.map((account) => {
       const isZhihu = account.platform === "zhihu";
-      const isXhs = account.platform === "xiaohongshu";
+      const isXhs = account.platform === "xiaohongshu", isDouyin = account.platform === "douyin";
       const identity = account.status === "logged_in"
-        ? (account.account_name || (isXhs ? "小红书登录状态" : isZhihu ? "知乎登录状态" : "B站账号"))
+        ? (account.account_name || (isDouyin ? "抖音登录状态" : isXhs ? "小红书登录状态" : isZhihu ? "知乎登录状态" : "B站账号"))
         : (["expired", "credential_error"].includes(account.status)
           ? "登录凭证不可用，点击重新登录"
-          : (account.status === "verification_required" ? "请打开官方窗口完成验证，再保存登录状态" : account.status === "unknown" ? "状态检查失败，仍可重新登录" : (isXhs ? "点击打开小红书登录窗口" : isZhihu ? "点击打开知乎登录窗口" : "点击扫码登录")));
+          : (account.status === "verification_required" ? "请打开官方窗口完成验证，再保存登录状态" : account.status === "unknown" ? "状态检查失败，仍可重新登录" : (isDouyin ? "点击打开抖音官方登录窗口" : isXhs ? "点击打开小红书登录窗口" : isZhihu ? "点击打开知乎登录窗口" : "点击扫码登录")));
       const avatarUrl = safeExternalUrl(account.avatar);
       const image = avatarUrl
         ? `<img class="account-avatar" src="${escapeHtml(avatarUrl)}" alt="账号头像">`
-        : `<div class="account-logo ${isXhs ? "xiaohongshu" : isZhihu ? "zhihu" : ""}">${isXhs ? "红" : isZhihu ? "知" : "B"}</div>`;
+        : `<div class="account-logo ${isDouyin ? "douyin" : isXhs ? "xiaohongshu" : isZhihu ? "zhihu" : ""}">${isDouyin ? "抖" : isXhs ? "红" : isZhihu ? "知" : "B"}</div>`;
       const storage = account.credential_storage || {};
       const canLogout = account.status === "logged_in" || storage.encrypted || storage.legacy_plaintext;
       const logout = canLogout ? `<button class="text-button account-logout-button" data-platform="${escapeHtml(account.platform)}" type="button">删除登录状态</button>` : "";
@@ -475,6 +487,7 @@ async function loadAccounts() {
     $$('[data-account-platform="bilibili"]').forEach((card) => card.addEventListener("click", startQrLogin));
     $$('[data-account-platform="zhihu"]').forEach((card) => card.addEventListener("click", startZhihuLogin));
     $$('[data-account-platform="xiaohongshu"]').forEach((card) => card.addEventListener("click", startXiaohongshuLogin));
+    $$('[data-account-platform="douyin"]').forEach((card) => card.addEventListener("click", startDouyinLogin));
     $$(".account-logout-button").forEach((button) => button.addEventListener("click", logoutAccount));
     const bilibiliStorage = accounts.find((account) => account.platform === "bilibili")?.credential_storage;
     const zhihuStorage = accounts.find((account) => account.platform === "zhihu")?.credential_storage;
@@ -581,10 +594,56 @@ async function closeXiaohongshuLoginModal() {
   $("#xiaohongshu-login-modal").hidden = true;
 }
 
+async function startDouyinLogin(event) {
+  if (event?.target?.closest(".account-logout-button")) return;
+  if (!hasDesktopBridge()) {
+    showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
+    return;
+  }
+  $("#douyin-login-modal").hidden = false;
+  $("#finish-douyin-login").disabled = false;
+  $("#finish-douyin-login").textContent = "保存登录状态";
+  $("#reopen-douyin-login").hidden = false;
+  $("#douyin-login-status").textContent = "正在打开抖音登录窗口…";
+  try {
+    const result = await window.pywebview.api.start_douyin_login();
+    $("#douyin-login-status").textContent = result.message;
+  } catch (error) {
+    $("#douyin-login-status").textContent = `登录窗口打开失败：${error.message || error}`;
+  }
+}
+
+async function finishDouyinLogin() {
+  if (!hasDesktopBridge()) return;
+  const button = $("#finish-douyin-login");
+  button.disabled = true;
+  $("#douyin-login-status").textContent = "正在检查并加密保存抖音登录状态…";
+  try {
+    const result = await window.pywebview.api.finish_douyin_login();
+    $("#douyin-login-status").textContent = result.message;
+    if (result.saved) {
+      showToast(result.message);
+      button.textContent = "已加密保存";
+      $("#reopen-douyin-login").hidden = true;
+      $("#douyin-login-status").textContent = result.message + "。可关闭此弹窗；后续实际读取会验证登录是否有效。";
+      await loadAccounts();
+    }
+  } catch (error) {
+    $("#douyin-login-status").textContent = `登录状态保存失败：${error.message || error}`;
+  } finally {
+    button.disabled = button.textContent === "已加密保存";
+  }
+}
+
+async function closeDouyinLoginModal() {
+  if (hasDesktopBridge()) await window.pywebview.api.cancel_douyin_login().catch(() => {});
+  $("#douyin-login-modal").hidden = true;
+}
+
 async function logoutAccount(event) {
   event.stopPropagation();
   const platform = event.currentTarget.dataset.platform;
-  const platformLabel = ({zhihu: "知乎", bilibili: "B站", xiaohongshu: "小红书"})[platform] || platform;
+  const platformLabel = ({zhihu: "知乎", bilibili: "B站", xiaohongshu: "小红书", douyin: "抖音"})[platform] || platform;
   if (!window.confirm(`确定删除本机保存的${platformLabel}登录状态吗？`)) return;
   if (platform === "bilibili") stopQrPolling();
   try {
@@ -596,12 +655,12 @@ async function logoutAccount(event) {
 
 function syncSourceFormPlatform() {
   const platform = $("#source-platform").value;
-  const isZhihu = platform === "zhihu", isXhs = platform === "xiaohongshu";
-  $("#source-id-label").textContent = isXhs ? "博主主页链接或账号ID" : isZhihu ? "主页链接或网址标识" : "账号编号";
-  $("#source-uid").inputMode = isZhihu || isXhs ? "url" : "numeric";
-  $("#source-uid").placeholder = isXhs ? "https://www.xiaohongshu.com/user/profile/…" : isZhihu ? "https://www.zhihu.com/org/zhi-hu-ri-bao-51-41" : "例如：21131684";
-  $("#zhihu-cookie-field").hidden = !(isZhihu || isXhs);
-  $("#zhihu-cookie-field .form-label").textContent = `手动填写${isXhs ? "小红书" : "知乎"} Cookie（备用）`;
+  const isZhihu = platform === "zhihu", isXhs = platform === "xiaohongshu", isDouyin = platform === "douyin";
+  $("#source-id-label").textContent = isXhs || isDouyin ? "博主主页链接或账号ID" : isZhihu ? "主页链接或网址标识" : "账号编号";
+  $("#source-uid").inputMode = isZhihu || isXhs || isDouyin ? "url" : "numeric";
+  $("#source-uid").placeholder = isDouyin ? "https://www.douyin.com/user/…" : isXhs ? "https://www.xiaohongshu.com/user/profile/…" : isZhihu ? "https://www.zhihu.com/org/zhi-hu-ri-bao-51-41" : "例如：21131684";
+  $("#zhihu-cookie-field").hidden = !(isZhihu || isXhs || isDouyin);
+  $("#zhihu-cookie-field .form-label").textContent = `手动填写${isDouyin ? "抖音" : isXhs ? "小红书" : "知乎"} Cookie（备用）`;
   $("#source-cookie").value = "";
 }
 
@@ -656,22 +715,22 @@ async function loadSourceDetail(platform, uid) {
     const data = await api(`/api/sources/${encodeURIComponent(platform)}/${encodeURIComponent(uid)}`);
     $("#detail-source-name").textContent = data.source.name;
     state.sourceName = data.source.name;
-    const platformLabel = data.source.platform === "xiaohongshu" ? "小红书账号" : data.source.platform === "zhihu" ? "知乎账号" : "B站账号编号";
-    $("#detail-source-meta").textContent = `${platformLabel} ${data.source.uid} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "xiaohongshu" ? "首次展示3篇，之后增量补抓，每次最多读取20篇；超过范围会提示" : "最近3条初始展示，之后每次最多追加3条新内容"}${platform === "xiaohongshu" ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
+    const platformLabel = data.source.platform === "douyin" ? "抖音账号" : data.source.platform === "xiaohongshu" ? "小红书账号" : data.source.platform === "zhihu" ? "知乎账号" : "B站账号编号";
+    $("#detail-source-meta").textContent = `${platformLabel} ${data.source.uid} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "douyin" ? "首次展示最近3条作品，后续检查公开主页新内容；读取范围有限时会提示" : platform === "xiaohongshu" ? "首次展示3篇，之后增量补抓，每次最多读取20篇；超过范围会提示" : "最近3条初始展示，之后每次最多追加3条新内容"}${["xiaohongshu", "douyin"].includes(platform) ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
     state.sourceDetailData = data;
-    state.sourceContentType = platform === "zhihu" ? previousContentType : "video";
+    state.sourceContentType = ["zhihu", "douyin"].includes(platform) ? previousContentType : "video";
     const typeOrder = ["图文", "文章", "回答", "想法", "提问", "视频", "其他"];
     const grouped = Object.groupBy ? Object.groupBy(data.videos, (item) => item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他")) : data.videos.reduce((acc, item) => { const key = item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他"); (acc[key] ||= []).push(item); return acc; }, {});
     const detailContainer = $("#source-videos");
     const typeMenu = $("#detail-content-types");
-    if (platform === "zhihu") {
+    if (["zhihu", "douyin"].includes(platform)) {
       typeMenu.hidden = false;
       typeMenu.innerHTML = typeOrder.filter((type) => grouped[type]?.length).map((type) => {
         const items = grouped[type];
         const unread = items.filter((item) => !item.read).length;
         const key = items[0].content_type || "other";
         return `<button class="content-type-card" type="button" data-content-type="${escapeHtml(key)}"><span><strong>${escapeHtml(type)}</strong><small>${items.length} 条内容</small></span>${unread ? `<b>${unread}<small>未读</small></b>` : "<i>已读</i>"}</button>`;
-      }).join("") || `<div class="empty-state">暂时还没有知乎内容。</div>`;
+      }).join("") || `<div class="empty-state">暂时还没有已收录内容。</div>`;
       typeMenu.querySelectorAll(".content-type-card").forEach((button) => button.addEventListener("click", () => showSourceContentType(button.dataset.contentType)));
       detailContainer.innerHTML = `<div class="empty-state type-select-hint">请选择上方内容类型。</div>`;
       if (state.sourceContentType && data.videos.some((item) => (item.content_type || "other") === state.sourceContentType)) {
@@ -972,7 +1031,7 @@ async function updateAutomation(event) {
 async function addSource(event) {
   event.preventDefault();
   const isZhihu = $("#source-platform").value === "zhihu";
-  $("#source-form-error").textContent = $("#source-platform").value === "xiaohongshu" ? "正在读取小红书博主的图文笔记，请稍候…" : isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
+  $("#source-form-error").textContent = $("#source-platform").value === "douyin" ? "正在读取抖音博主的公开作品，请稍候…" : $("#source-platform").value === "xiaohongshu" ? "正在读取小红书博主的图文笔记，请稍候…" : isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
   try {
     const data = await api("/api/sources", { method: "POST", body: JSON.stringify({ platform: $("#source-platform").value, uid: $("#source-uid").value.trim(), name: $("#source-name").value.trim() || null, cookie: $("#source-cookie").value.trim() || null }) });
     $("#source-modal").hidden = true;
@@ -1068,6 +1127,10 @@ function bindEvents() {
   $("#reopen-xiaohongshu-login").addEventListener("click", startXiaohongshuLogin);
   $("#close-xiaohongshu-login-modal").addEventListener("click", closeXiaohongshuLoginModal);
   $("#xiaohongshu-login-modal").addEventListener("click", (event) => { if (event.target.id === "xiaohongshu-login-modal") closeXiaohongshuLoginModal(); });
+  $("#finish-douyin-login").addEventListener("click", finishDouyinLogin);
+  $("#reopen-douyin-login").addEventListener("click", startDouyinLogin);
+  $("#close-douyin-login-modal").addEventListener("click", closeDouyinLoginModal);
+  $("#douyin-login-modal").addEventListener("click", (event) => { if (event.target.id === "douyin-login-modal") closeDouyinLoginModal(); });
   $("#api-key-form").addEventListener("submit", updateAiProvider);
   $("#video-analysis-form").addEventListener("submit", updateVideoAnalysis);
   $("#test-video-input").addEventListener("click", testVideoInput);

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>赛博情报局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-text-only">
+  <link rel="stylesheet" href="/static/styles.css?v=20261012-douyin">
 </head>
 <body>
   <div class="app-shell">
@@ -122,7 +122,7 @@
             <details class="note-original" id="briefing-note-options">
               <summary>分析选项</summary>
               <p class="setting-help" id="briefing-note-scope"></p>
-              <p class="setting-help">后台会结合正文与图片提炼信息。快速分析最多读取前6张；完整分析最多读取30张，模型用量会随图片数量增加。</p>
+              <p class="setting-help" id="briefing-note-image-help">后台会结合正文与图片提炼信息。快速分析最多读取前6张；完整分析最多读取30张，模型用量会随图片数量增加。</p>
               <div id="briefing-note-actions" class="analysis-actions"></div>
             </details>
           </div>
@@ -134,7 +134,7 @@
 
       <section class="view" id="view-accounts">
         <div class="section-heading page-heading">
-          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩、知乎和小红书的本机登录状态。</p></div>
+          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩、知乎、小红书和抖音的本机登录状态。</p></div>
         </div>
         <div class="account-list" id="account-list"></div>
         <div class="account-security-note">
@@ -259,7 +259,7 @@
       <h2>添加关注</h2>
       <p class="section-description">添加后会读取最近3条内容用于详情页展示，但不会把它们计入未读更新。</p>
       <form id="source-form">
-        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option><option value="xiaohongshu">小红书（图文）</option></select></label>
+        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option><option value="xiaohongshu">小红书（图文）</option><option value="douyin">抖音（视频与图文）</option></select></label>
         <label><span class="form-label" id="source-id-label">账号编号</span><input id="source-uid" inputmode="numeric" placeholder="例如：21131684" required></label>
         <label id="zhihu-cookie-field" hidden><span class="form-label">手动填写知乎 Cookie（备用）</span><textarea id="source-cookie" rows="3" placeholder="建议先在账号管理中登录；也可在这里粘贴 Cookie"></textarea></label>
         <label><span class="form-label">备注名称（可选）</span><input id="source-name" placeholder="不填写则使用博主名称"></label>
@@ -302,6 +302,18 @@
       </div>
     </div>
   </div>
+  <div class="modal-backdrop" id="douyin-login-modal" hidden>
+    <div class="modal">
+      <button class="modal-close" id="close-douyin-login-modal" type="button">×</button>
+      <h2>登录抖音</h2>
+      <p class="section-description">① 在官方窗口完成登录；② 保持官方窗口打开，回到这里点击“保存登录状态”；③ 等待“已加密保存”提示后关闭弹窗。</p>
+      <div class="qr-status" id="douyin-login-status">准备打开抖音登录窗口…</div>
+      <div class="modal-actions douyin-login-actions">
+        <button class="ghost-button" id="reopen-douyin-login" type="button">重新打开窗口</button>
+        <button class="primary-button" id="finish-douyin-login" type="button">保存登录状态</button>
+      </div>
+    </div>
+  </div>
   <div class="modal-backdrop" id="delete-source-modal" hidden>
     <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title">
       <button class="modal-close" id="close-delete-source-modal" type="button" title="关闭">×</button>
@@ -315,6 +327,6 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=20261011-text-only"></script>
+  <script src="/static/app.js?v=20261012-douyin"></script>
 </body>
 </html>

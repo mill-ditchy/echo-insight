@@ -22,8 +22,12 @@ _lock = threading.RLock()
 
 
 class ImageRedirect(HTTPRedirectHandler):
+    def __init__(self, domains=IMAGE_DOMAINS):
+        super().__init__()
+        self.domains = domains
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_https_url(newurl, IMAGE_DOMAINS)
+        validate_https_url(newurl, self.domains)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -37,16 +41,17 @@ def image_cache_key(url: str) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def download_image(url: str) -> Path:
-    validate_https_url(url, IMAGE_DOMAINS)
+def download_image(url: str, *, domains=IMAGE_DOMAINS, referer="https://www.xiaohongshu.com/", cache_dir=None) -> Path:
+    validate_https_url(url, domains)
     key = image_cache_key(url)
-    path = CACHE_DIR / f"v2-{key}.jpg"
+    directory = cache_dir or CACHE_DIR
+    path = directory / f"v2-{key}.jpg"
     with _lock:
         if path.is_file():
             return path
-        request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.xiaohongshu.com/"})
-        with build_opener(ImageRedirect()).open(request, timeout=18) as response:
-            validate_https_url(response.geturl(), IMAGE_DOMAINS)
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": referer})
+        with build_opener(ImageRedirect(domains)).open(request, timeout=18) as response:
+            validate_https_url(response.geturl(), domains)
             if int(response.headers.get("Content-Length") or 0) > MAX_BYTES:
                 raise ValueError("笔记图片超过8MB，本次跳过")
             chunks, size = [], 0
@@ -61,7 +66,7 @@ def download_image(url: str) -> Path:
             image = ImageOps.exif_transpose(original).convert("RGB")
             # Preserve vertical text resolution. Long images are read in strips.
             image.thumbnail((1800, 18000))
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
             try:
                 image.save(temporary, format="JPEG", quality=88)

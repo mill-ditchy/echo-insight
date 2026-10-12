@@ -10,6 +10,7 @@ from .rsshub import RsshubFetcher
 from .rss import RssFetcher
 from .zhihu import ZhihuFetcher
 from .xiaohongshu import XiaohongshuFetcher
+from .douyin import DouyinFetcher
 
 # ======================================================================
 # 注册表：platform_key → (fetcher实例, 中文标签, 默认分类, uid提示语, uid示例, 备注)
@@ -32,12 +33,12 @@ PLATFORMS = {
         "note": "需要 RSSHub",
     },
     "douyin": {
-        "fetcher": RsshubFetcher("/douyin/user/{uid}"),
+        "fetcher": DouyinFetcher(),
         "label": "抖音",
         "category": "抖音",
         "uid_prompt": "输入抖音号的唯一标识（在用户主页网址里，比如 https://www.douyin.com/user/ 后面那串）：",
         "uid_example": "MS4wLjABAAAA6J3mO1NUQWxM_tKZ8sI2T",
-        "note": "需要 RSSHub，防爬严格",
+        "note": "读取公开视频与图文，结合语音、画面和配文生成简报",
     },
     "kuaishou": {
         "fetcher": RsshubFetcher("/kuaishou/user/{uid}"),

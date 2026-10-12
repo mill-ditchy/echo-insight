@@ -17,7 +17,7 @@ SUMMARY_DIR = PROJECT_ROOT / "output" / "summaries"
 MAX_ITEMS = 1000
 _data_lock = threading.RLock()
 ANALYSIS_FIELDS = ("ai_segment_count", "ai_completeness", "ai_input_mode", "ai_evidence_file", "ai_analysis_warnings", "ai_fallback_reason", "ai_note_reading_mode", "ai_note_evidence", "ai_image_numbers", "requested_note_reading_mode")
-NOTE_FIELDS = ("note_id", "images", "image_count", "cover_url", "tags", "detail_status", "fetch_warning", "author_avatar")
+NOTE_FIELDS = ("note_id", "images", "image_count", "cover_url", "tags", "detail_status", "fetch_warning", "author_avatar", "media_urls", "duration")
 
 
 def _copy_analysis_fields(target: dict, source: dict) -> None:

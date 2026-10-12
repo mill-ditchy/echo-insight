@@ -593,6 +593,8 @@ class DeepSeekSummarizer:
         messages = self._build_messages(title, transcript, frames, plan)
         if analyzer:
             evidence = analyzer.analyze(bvid, title, transcript, transcript_segments or [], segments, plan, use_cache, progress_callback)
+            if plan.get("preserve_on_partial_failure") and evidence.get("failures"):
+                raise RuntimeError("本次部分视频片段分析失败，已保留上次成功简报；可稍后重试")
             timeline = [{"start": r["start"], "end": r["end"], "evidence": r["evidence"], "ocr": r["ocr"]} for r in evidence["segments"]]
             extra = (
                 "\n分段画面证据（已覆盖的时间范围）：" + json.dumps(timeline, ensure_ascii=False)
@@ -629,6 +631,8 @@ class DeepSeekSummarizer:
         choices = response.get("choices", [])
         if not choices:
             raise RuntimeError("AI 接口响应中没有生成结果")
+        if choices[0].get("finish_reason") in {"length", "content_filter"}:
+            raise RuntimeError("模型输出被截断或未完整返回，本次结果未保存，请稍后重试")
 
         content = (choices[0].get("message", {}).get("content") or "").strip()
         if not content:

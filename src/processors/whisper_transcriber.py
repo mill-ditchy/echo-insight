@@ -5,6 +5,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..platforms.bilibili_audio import BilibiliAudioDownloader
 from ..platforms.bilibili_subtitle import (
@@ -97,11 +98,14 @@ class WhisperTranscriber:
                     _BATCHED_PIPELINE_CACHE[key] = pipeline
             return model, pipeline
 
-    def transcribe(self, video_url: str) -> TranscriptResult:
+    def transcribe(self, video_url: str, *, local_path: Path | None = None, media_id: str = "") -> TranscriptResult:
         if not self.config.get("enabled", True):
             raise RuntimeError("语音识别已在 config/transcription.json 中关闭")
 
-        bvid = BilibiliSubtitleFetcher.extract_bvid(video_url)
+        bvid = media_id if local_path is not None else BilibiliSubtitleFetcher.extract_bvid(video_url)
+        if local_path is not None:
+            from ..security.cache_paths import safe_cache_id
+            safe_cache_id(bvid)
         if not bvid:
             raise ValueError(f"无法从视频地址提取BVID: {video_url}")
 
@@ -117,7 +121,7 @@ class WhisperTranscriber:
         os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-        downloaded = BilibiliAudioDownloader().download(video_url)
+        downloaded = SimpleNamespace(path=Path(local_path), bvid=bvid, cid=0) if local_path is not None else BilibiliAudioDownloader().download(video_url)
         completed = False
         try:
             model, batched_pipeline = self._get_model()
@@ -169,5 +173,5 @@ class WhisperTranscriber:
                 raise
             raise RuntimeError(f"Whisper语音识别失败: {exc}") from exc
         finally:
-            if completed and self.config.get("cleanup_audio", True):
+            if local_path is None and completed and self.config.get("cleanup_audio", True):
                 downloaded.path.unlink(missing_ok=True)

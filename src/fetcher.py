@@ -45,6 +45,8 @@ def needs_ai_summary(article: dict) -> bool:
         return True
     if platform == "xiaohongshu":
         return article.get("content_type") == "image_note"
+    if platform == "douyin":
+        return article.get("content_type") in {"image_note", "video"}
     return (
         platform == "zhihu"
         and str(article.get("content_type", "")).lower() in ZHIHU_AI_CONTENT_TYPES
@@ -101,11 +103,15 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
 
         try:
             from .platforms.xiaohongshu import XiaohongshuFetcher
-            if isinstance(fetcher, XiaohongshuFetcher):
+            from .platforms.douyin import DouyinFetcher
+            if isinstance(fetcher, (XiaohongshuFetcher, DouyinFetcher)):
                 from .state_manager import load_state
                 saved = load_state().get("sources", {}).get(f"{platform}:{uid}")
                 articles = fetcher.fetch_incremental(uid, saved.get("seen_ids", [])) if saved is not None else fetcher.fetch(uid)
-                from .platforms.xiaohongshu_status import get_source_status
+                if platform == "douyin":
+                    from .platforms.douyin_status import get_source_status
+                else:
+                    from .platforms.xiaohongshu_status import get_source_status
                 warning = get_source_status(uid).get("scan_warning", "")
                 if warning:
                     errors.append(f"{name} 补抓范围有限: {warning}")
@@ -127,8 +133,8 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
         count = len(articles)
         if count:
             print(f"  [完成] 抓到 {count} 篇")
-        elif platform == "xiaohongshu":
-            print("  [完成] 已读取主页，没有新图文")
+        elif platform in {"xiaohongshu", "douyin"}:
+            print("  [完成] 已读取主页，没有新内容")
         else:
             message = f"{name} 未抓到内容"
             print(f"  [警告] {message}")
@@ -153,6 +159,10 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
     if article.get("platform") == "xiaohongshu":
         from .processors.xiaohongshu_summary import enrich_note
         enrich_note(article, progress_callback=progress_callback, use_cache=use_cache)
+        return
+    if article.get("platform") == "douyin":
+        from .processors.douyin_summary import enrich_post
+        enrich_post(article, progress_callback=progress_callback, use_cache=use_cache)
         return
 
     current_id = str(article.get("article_id") or article.get("video_id") or "")

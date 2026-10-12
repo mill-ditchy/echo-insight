@@ -75,16 +75,18 @@ def _enrich_note(article, progress_callback, *, use_cache):
             progress_callback(stage)
 
     summarizer = DeepSeekSummarizer()
+    is_douyin = article.get("platform") == "douyin"
     if not summarizer.is_configured():
         raise RuntimeError("请先在设置中配置 AI 接入")
     if article.get("detail_status") != "available" or not use_cache:
         from ..platforms.xiaohongshu import XiaohongshuFetcher
+        from ..platforms.douyin import DouyinFetcher
         from ..update_history import refresh_history_metadata
         progress("note_reading")
-        refreshed = XiaohongshuFetcher().fetch_note(str(article.get("source_uid") or ""), article["note_id"], article["link"])
+        refreshed = (DouyinFetcher() if is_douyin else XiaohongshuFetcher()).fetch_note(str(article.get("source_uid") or ""), article["note_id"], article["link"])
         article.update(refreshed)
         refresh_history_metadata([article])
-    mode = article.get("requested_note_reading_mode") or article.get("ai_note_reading_mode") or "quick"
+    mode = article.get("requested_note_reading_mode") or article.get("ai_note_reading_mode") or ("full" if is_douyin else "quick")
     if mode not in {"quick", "full"}:
         raise ValueError("图文阅读模式无效")
     limit = MAX_FULL_IMAGES if mode == "full" else MAX_IMAGES
@@ -105,7 +107,11 @@ def _enrich_note(article, progress_callback, *, use_cache):
     failed = set()
     for number, url in enumerate(urls[:limit], 1):
         try:
-            path = download_image(url)
+            if is_douyin:
+                from ..platforms.douyin import MEDIA_DOMAINS
+                path = download_image(url, domains=MEDIA_DOMAINS, referer="https://www.douyin.com/", cache_dir=EVIDENCE_DIR.parent / "douyin_images")
+            else:
+                path = download_image(url)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             digests.append((number, digest))
             parts = image_parts(path)
@@ -137,7 +143,7 @@ def _enrich_note(article, progress_callback, *, use_cache):
     ocr_text = "\n".join(f"图片{e['number']}：{e['ocr']}" for e in evidence if e.get("ocr"))
     if not body and not ocr_text and not use_vision:
         raise RuntimeError("图片中没有读到可用文字，请配置支持图片的模型并启用图片理解后重试")
-    plan = {"version": VERSION, "mode": mode, "images": digests, "vision": use_vision, "text_model": summarizer.model,
+    plan = {"version": VERSION, "platform": article.get("platform", "xiaohongshu"), "summary_style": "douyin-information-v1" if is_douyin else "default", "mode": mode, "images": digests, "vision": use_vision, "text_model": summarizer.model,
             "total": total, "tags": article.get("tags", [])}
     source_hash = summarizer._source_hash(title, body + "\n" + ocr_text, model, [], plan)
     cache_id = str(article["article_id"])
@@ -198,9 +204,18 @@ def _enrich_note(article, progress_callback, *, use_cache):
                   f"分批图片解读：\n{chr(10).join(batch_notes)[:50000] or '无图片解读'}\n"
                   f"图片范围：共{total}张，已读取序号{numbers}。读取限制：{'；'.join(dict.fromkeys(warnings)) or '无'}\n"
                   "概括主要内容、关键事实和作者明确表达的结论。教程保留步骤与条件，对比保留对象、参数和差异。"
+                  "结合配文、图片内文字和视觉证据提炼整篇信息，不逐张描述画面、颜色或构图，不写成图片说明清单。"
+                  "OCR是可能出错的识别草稿；人名、数字优先核对清晰配文和实际画面，不把明显的OCR错字当成事实争议。"
                   "关键事实必须标注对应[图片N]或[正文]，只用已读取的编号。作者观点明确写为作者观点；"
                   "如确有必要推断，明确写为模型推断。无法确认的信息不要猜测。用1至4个简短自然段输出中文纯文本，"
                   "不添加材料外的建议，不把局部图片写成完整笔记结论。")
+        if is_douyin:
+            prompt += ("这是一份面向读者的信息摘要：先写主题或事件及结果，再整合图片和配文提供的关键细节，通常150至400字。"
+                       "图片证据用于补充和解释内容，不用专门一段描述图片。不要逐项列出看到了什么。"
+                       "采用‘作者介绍/作品讲述/制作方称’等自然归属表达即可，不重复标注‘作者观点是’。"
+                       "不要额外索要证书或第三方证明，不添加‘无法独立核验’等与总结无关的核查套话。"
+                       "OCR错字不作为事实冲突；姓名优先使用清晰配文，不在摘要中展开无关的字形争议。"
+                       "只有材料本身存在影响核心理解的明确矛盾或缺失时才简短指出。")
         response = _request(summarizer, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}], summarizer.model, 2000)
         summary = _response_text(response)
         invalid = False
@@ -220,7 +235,7 @@ def _enrich_note(article, progress_callback, *, use_cache):
             bvid=cache_id, title=title, model=model, content=summarizer.normalize_summary_text(summary),
             source_hash=source_hash, created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             usage=response.get("usage", {}), analysis_mode="note_visual" if use_vision else "note_text", frame_count=len(numbers),
-            summary_strategy="xiaohongshu_image_note", router_version=VERSION,
+            summary_strategy="douyin_image_note" if is_douyin else "xiaohongshu_image_note", router_version=VERSION,
             input_mode="note_images" if use_vision else "note_text", completeness="partial" if warnings else "complete",
             analysis_warnings=warnings, note_reading_mode=mode, note_evidence=evidence, image_numbers=numbers)
         summarizer._save_cache(result)

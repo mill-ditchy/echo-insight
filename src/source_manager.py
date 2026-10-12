@@ -50,6 +50,9 @@ def normalize_source_uid(platform: str, value: str) -> str:
     """把用户输入转换成稳定、可用于URL路径的内部标识。"""
     platform = str(platform).strip().lower()
     value = str(value).strip().rstrip("/")
+    if platform == "douyin":
+        from .platforms.douyin import normalize_uid
+        return normalize_uid(value)
     if platform == "xiaohongshu":
         from .platforms.xiaohongshu import normalize_uid
         return normalize_uid(value)

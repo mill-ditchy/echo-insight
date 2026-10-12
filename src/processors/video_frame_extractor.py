@@ -9,6 +9,7 @@ from PIL import Image, ImageChops, ImageFilter, ImageStat
 from fractions import Fraction
 import math
 import hashlib
+from types import SimpleNamespace
 
 from ..platforms.bilibili_subtitle import BilibiliSubtitleFetcher
 from ..platforms.bilibili_video import BilibiliVideoDownloader
@@ -275,7 +276,7 @@ class VideoFrameExtractor:
             backward=True,
         )
         best = None
-        for index, frame in enumerate(container.decode(video=stream.index)):
+        for index, frame in enumerate(container.decode(stream)):
             best = frame
             frame_time = float(frame.time or 0)
             if frame_time >= timestamp - 0.12 or index >= 300:
@@ -375,7 +376,7 @@ class VideoFrameExtractor:
         target_index = 0
         previous_thumb = None
         stream.thread_type = "AUTO"
-        for frame in container.decode(video=stream.index):
+        for frame in container.decode(stream):
             if target_index >= len(targets):
                 break
             frame_time = float(frame.time or 0)
@@ -625,6 +626,7 @@ class VideoFrameExtractor:
         self,
         video_url: str,
         summary_plan: dict | None = None,
+        *, local_path: Path | None = None, media_id: str = "",
     ) -> FrameExtractionResult:
         if not self.config.get("enabled", True):
             raise RuntimeError("视频视觉分析已关闭")
@@ -632,14 +634,17 @@ class VideoFrameExtractor:
         strategy = (summary_plan or {}).get("primary_strategy", "general")
         if strategy not in PROFILE_CONFIG:
             strategy = "general"
-        bvid = BilibiliSubtitleFetcher.extract_bvid(video_url)
+        bvid = media_id if local_path is not None else BilibiliSubtitleFetcher.extract_bvid(video_url)
+        if local_path is not None:
+            from ..security.cache_paths import safe_cache_id
+            safe_cache_id(bvid)
         if not bvid:
             raise ValueError(f"无法从视频地址提取BVID: {video_url}")
         cached = self._load_cache(bvid, strategy)
         if cached:
             return cached
 
-        downloaded = BilibiliVideoDownloader().download(video_url)
+        downloaded = SimpleNamespace(path=Path(local_path)) if local_path is not None else BilibiliVideoDownloader().download(video_url)
         completed = False
         try:
             import av
@@ -745,5 +750,5 @@ class VideoFrameExtractor:
                 raise
             raise RuntimeError(f"视频关键帧提取失败: {exc}") from exc
         finally:
-            if completed and self.config.get("cleanup_video", True):
+            if local_path is None and completed and self.config.get("cleanup_video", True):
                 downloaded.path.unlink(missing_ok=True)

@@ -10,6 +10,7 @@ import webview
 
 from webapp import app
 from src.accounts.zhihu_account import save_webview_login
+from src.accounts.douyin_account import save_webview_login as save_douyin_login
 from src.accounts.xiaohongshu_account import save_webview_login as save_xhs_login
 
 
@@ -23,6 +24,7 @@ class DesktopApi:
     def __init__(self) -> None:
         self._zhihu_window = None
         self._xiaohongshu_window = None
+        self._douyin_window = None
         self._lock = threading.RLock()
 
     def _release_zhihu_window(self, window=None) -> None:
@@ -129,6 +131,56 @@ class DesktopApi:
             with self._lock:
                 if self._xiaohongshu_window is window:
                     self._xiaohongshu_window = None
+        return {"cancelled": True}
+
+    def start_douyin_login(self) -> dict:
+        with self._lock:
+            if self._douyin_window is not None:
+                try:
+                    self._douyin_window.restore()
+                    self._douyin_window.show()
+                    self._douyin_window.on_top = True
+                    self._douyin_window.on_top = False
+                    return {"opened": True, "message": "抖音登录窗口已经打开"}
+                except Exception:
+                    self._douyin_window = None
+            window = webview.create_window("登录抖音", "https://www.douyin.com/",
+                                           width=980, height=760, min_size=(720, 560), text_select=True, focus=True, on_top=True)
+            self._douyin_window = window
+            window.events.loaded += lambda: setattr(window, "on_top", False)
+            def release():
+                with self._lock:
+                    if self._douyin_window is window:
+                        self._douyin_window = None
+            window.events.closing += lambda: self._clear_window_cookies(window)
+            window.events.closed += release
+        return {"opened": True, "message": "请在官方抖音窗口完成登录，再回来保存登录状态"}
+
+    def finish_douyin_login(self) -> dict:
+        with self._lock:
+            window = self._douyin_window
+        if window is None:
+            return {"saved": False, "message": "抖音登录窗口尚未打开或已关闭"}
+        try:
+            account = save_douyin_login(window.get_cookies())
+        except Exception as exc:
+            return {"saved": False, "message": str(exc)}
+        self._clear_window_cookies(window)
+        window.destroy()
+        with self._lock:
+            if self._douyin_window is window:
+                self._douyin_window = None
+        return {"saved": True, "message": "抖音登录状态已加密保存", "account": account}
+
+    def cancel_douyin_login(self) -> dict:
+        with self._lock:
+            window = self._douyin_window
+        if window is not None:
+            self._clear_window_cookies(window)
+            window.destroy()
+            with self._lock:
+                if self._douyin_window is window:
+                    self._douyin_window = None
         return {"cancelled": True}
 
     def cancel_zhihu_login(self) -> dict:

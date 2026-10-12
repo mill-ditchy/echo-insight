@@ -107,7 +107,7 @@ def check_access(client) -> None:
 
 
 @contextmanager
-def browser(cookie: str):
+def browser(cookie: str, *, domain: str = "xiaohongshu.com"):
     """沿用已验证的 Edge/CDP 连接，Cookie 仅放入小红书域名。"""
     with tempfile.TemporaryDirectory(prefix="cyber-xhs-edge-", ignore_cleanup_errors=True) as directory:
         process = subprocess.Popen([
@@ -130,7 +130,7 @@ def browser(cookie: str):
                 client.call(method)
             parsed = SimpleCookie()
             parsed.load(cookie)
-            cookies = [{"name": name, "value": entry.value, "domain": ".xiaohongshu.com",
+            cookies = [{"name": name, "value": entry.value, "domain": "." + domain,
                         "path": "/", "secure": True} for name, entry in parsed.items()]
             if cookies:
                 client.call("Network.setCookies", {"cookies": cookies})
