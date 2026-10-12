@@ -15,6 +15,7 @@ from src.platforms import xiaohongshu_browser as browser, xiaohongshu_status as 
 from src.platforms.xiaohongshu import XiaohongshuFetcher, parse_note
 from src.processors import xiaohongshu_summary as summary, xiaohongshu_images as images
 from src.processors.deepseek_summarizer import DeepSeekSummarizer, SummaryResult
+from src.processors import deepseek_summarizer as api_module
 
 UID = "5feb479b000000000101c3fe"
 PHOTO = "https://sns-img-qc.xhscdn.com/image.jpg"
@@ -42,6 +43,49 @@ class IsolatedTests(unittest.TestCase):
             patcher = patch.object(module, name, self.root / relative)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+
+class NoteRequestRecoveryTests(unittest.TestCase):
+    def model(self):
+        model = DeepSeekSummarizer.__new__(DeepSeekSummarizer)
+        model.api_url = 'https://example.com/v1/chat/completions'
+        model.get_api_key = Mock(return_value='test-secret')
+        return model
+
+    def test_transient_connection_and_gateway_failures_retry_once(self):
+        success = Mock(ok=True, status_code=200)
+        success.json.return_value = {'choices': [{'message': {'content': '恢复后的简报'}}]}
+        gateway = Mock(ok=False, status_code=502, text='Bad gateway')
+        for failure in [api_module.requests.exceptions.SSLError('unexpected EOF'), gateway]:
+            with self.subTest(failure=type(failure).__name__), patch.object(api_module.requests, 'post', side_effect=[failure, success]) as post, patch.object(api_module.time, 'sleep'):
+                result = summary._request(self.model(), [], 'gpt-5-test', 1600)
+                self.assertIn('恢复', result['choices'][0]['message']['content'])
+                self.assertEqual(post.call_count, 2)
+                self.assertFalse(post.call_args.kwargs['allow_redirects'])
+                self.assertNotEqual(post.call_args.kwargs.get('verify'), False)
+
+    def test_persistent_connection_failure_is_bounded_and_secret_redacted(self):
+        with patch.object(api_module.requests, 'post', side_effect=api_module.requests.ConnectionError('test-secret EOF')) as post, patch.object(api_module.time, 'sleep'):
+            with self.assertRaises(RuntimeError) as error:
+                summary._request(self.model(), [], 'text-model', 2000)
+            self.assertEqual(post.call_count, 2)
+            self.assertNotIn('test-secret', str(error.exception))
+
+    def test_credentials_error_is_not_retried(self):
+        response = Mock(ok=False, status_code=401, text='Unauthorized')
+        with patch.object(api_module.requests, 'post', return_value=response) as post:
+            with self.assertRaisesRegex(RuntimeError, '401'):
+                summary._request(self.model(), [], 'text-model', 2000)
+            self.assertEqual(post.call_count, 1)
+
+    def test_unsupported_reasoning_option_can_fall_back(self):
+        rejected = Mock(ok=False, status_code=400, text='Unsupported reasoning_effort')
+        success = Mock(ok=True, status_code=200)
+        success.json.return_value = {'choices': [{'message': {'content': '摘要'}}]}
+        with patch.object(api_module.requests, 'post', side_effect=[rejected, success]) as post:
+            summary._request(self.model(), [], 'gpt-5-test', 1600)
+            self.assertEqual(post.call_count, 2)
+            self.assertNotIn('reasoning_effort', post.call_args.kwargs['json'])
 
 
 class IncrementalTests(IsolatedTests):
@@ -223,6 +267,14 @@ class CompleteReadingTests(IsolatedTests):
             summary.enrich_note(item)
         self.assertEqual(item["ai_summary"], "旧简报")
         self.assertEqual(self.api.call_count, 1)
+
+    def test_all_visual_batches_failed_does_not_generate_an_ocr_only_success(self):
+        self.api.side_effect = RuntimeError('AI API错误 HTTP 502: temporary failure')
+        item = article(6)
+        with self.assertRaisesRegex(RuntimeError, '图片理解未成功.*502'):
+            summary.enrich_note(item)
+        self.assertEqual(self.api.call_count, 1)
+        self.assertNotIn('ai_summary', item)
 
     def test_unread_image_citation_is_not_linked_as_evidence(self):
         self.api.return_value = {"choices": [{"message": {"content": "断言[图片18]"}}]}

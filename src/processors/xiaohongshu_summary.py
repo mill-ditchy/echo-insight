@@ -41,11 +41,13 @@ def _response_text(response):
 
 def _request(summarizer, messages, model, max_tokens):
     options = {"reasoning_effort": "low"} if model.startswith(("gpt-5", "gpt-6")) else {}
+    # Reuse the API client's bounded retry for transient transport/5xx/429
+    # failures; credential and other non-retryable 4xx errors still stop once.
     try:
-        return summarizer._call_api(messages, model, attempts=1, timeout=(8, 75), max_tokens=max_tokens, **options)
+        return summarizer._call_api(messages, model, attempts=2, timeout=(8, 90), max_tokens=max_tokens, **options)
     except Exception as exc:
         if options and "400" in str(exc) and "reasoning_effort" in str(exc):
-            return summarizer._call_api(messages, model, attempts=1, timeout=(8, 75), max_tokens=max_tokens)
+            return summarizer._call_api(messages, model, attempts=2, timeout=(8, 90), max_tokens=max_tokens)
         raise
 
 
@@ -152,6 +154,7 @@ def _enrich_note(article, progress_callback, *, use_cache):
         result = None
     if result is None:
         batch_notes = []
+        batch_errors = []
         api_calls = 0
         if use_vision:
             progress("note_batches")
@@ -185,7 +188,8 @@ def _enrich_note(article, progress_callback, *, use_cache):
                             response = _request(summarizer, [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}], model, 1600)
                             text = _response_text(response)
                             atomic_json(path, {"text": text})
-                        except Exception:
+                        except Exception as exc:
+                            batch_errors.append(str(exc)[:300])
                             failed.update(numbers)
                             warnings.append(f"图片{'、'.join(map(str, numbers))}的图片理解失败，可重试此批次")
                             continue
@@ -195,7 +199,11 @@ def _enrich_note(article, progress_callback, *, use_cache):
         if not body and not ocr_text and not batch_notes:
             raise RuntimeError("图片分析未取得可用信息，请稍后重试；上次成功简报仍会保留")
         if article.get("ai_summary") and failed:
-            raise RuntimeError("本次有图片未完成分析，已保留上次成功简报；再次分析会复用已成功的批次")
+            reason = f"；原因：{batch_errors[0]}" if batch_errors else ""
+            raise RuntimeError("本次有图片未完成分析，已保留上次成功简报；再次分析会复用已成功的批次" + reason)
+        if use_vision and not batch_notes and failed:
+            reason = f"；原因：{batch_errors[0]}" if batch_errors else ""
+            raise RuntimeError("图片理解未成功，本次未生成图文简报；稍后重试会复用已读取的内容" + reason)
         progress("summarizing")
         if len(ocr_text) > 40000 or len(chr(10).join(batch_notes)) > 50000:
             warnings.append("汇总材料达到文字预算上限，部分细节未进入最终摘要，请查看逐图依据")
