@@ -1,31 +1,69 @@
 name: 错误报告
-description: 提交可以复现的问题，请移除账号、Cookie、Key 和个人内容。
+description: 提供可复现的问题与已脱敏环境信息。
 title: "[Bug] "
 body:
   - type: markdown
     attributes:
-      value: "请不要上传 config/secrets、历史数据或完整私人日志。可附上 scripts/doctor.py --json 的诊断报告。安全漏洞请先阅读 SECURITY.md。"
+      value: |
+        先阅读 [排查说明](https://github.com/mill-ditchy/echo-insight/blob/main/docs/TROUBLESHOOTING.md) 并搜索已有 Issues。
+        安全漏洞请按 [SECURITY.md](https://github.com/mill-ditchy/echo-insight/blob/main/SECURITY.md) 私密报告。
+        不要上传 Cookie、Key、登录二维码、加密凭证、完整个人配置、历史或媒体。
   - type: input
     id: version
     attributes:
-      label: 项目版本与 Windows 版本
-      placeholder: "v0.1.0 / Windows 11"
+      label: 项目版本或提交号
+      placeholder: "VERSION 为 0.1.0；另提供 main 分支提交号（如能获取）"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      placeholder: "Windows 11 / Python 3.11 x64 / WebView2 或 Edge 情况"
+    validations:
+      required: true
+  - type: dropdown
+    id: entry
+    attributes:
+      label: 使用入口
+      options:
+        - Windows 桌面窗口
+        - 本机浏览器
+        - 命令行
+        - Windows 自动检查
+        - 安装或开发检查
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: 复现步骤、预期结果和实际结果
+      label: 最小复现步骤
+      description: "说明涉及的平台、操作顺序和是否每次发生；使用虚构或公开样本。"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
     validations:
       required: true
   - type: textarea
     id: diagnostics
     attributes:
-      label: 已脱敏的错误信息或环境诊断
+      label: 已脱敏的错误、截图或环境诊断（可选）
+      description: '在项目根目录执行 .\.venv\Scripts\python.exe scripts/doctor.py --json；其他日志和截图仍须人工脱敏。'
   - type: checkboxes
-    id: privacy
+    id: checks
     attributes:
-      label: 数据检查
+      label: 提交前确认
       options:
-        - label: "我已移除 Cookie、API Key、登录凭证和私人内容。"
+        - label: 我已搜索已有 Issues 并阅读相关排查说明。
+          required: true
+        - label: 我已移除凭证、私人数据和登录二维码；此报告不包含公开漏洞利用细节。
           required: true

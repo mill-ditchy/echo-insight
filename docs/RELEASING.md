@@ -1,8 +1,10 @@
 # 发布操作
 
-首次发布前先创建空 GitHub 仓库，仓库名建议 `cyber-intelligence-agency`。不要自动生成 README 或 LICENSE。在仓库设置中启用 Actions、Dependabot alerts 与 Private vulnerability reporting；首次上传可以选择私有。远端权限由仓库所有者配置，源码准备脚本不会擅自更改公开状态。
+源码仓库为 [mill-ditchy/echo-insight](https://github.com/mill-ditchy/echo-insight)。截至 2026-10-13，Windows 源码已上传 `main`，但尚无版本标签或正式 Release。`VERSION` 为 `0.1.0`，分支还包含更新记录中的未发布改动；上传源码、打标签和公开发行是三个不同步骤。
 
-当前默认发布 Windows 端。安卓源码与手机服务保留本机、由忽略规则排除；默认发布扫描会拒绝误加入的伴侣文件。公共网页布局和桌面测试仍需提交。后续伴侣版需单独审核公开范围，再明确使用 `--include-companion` 开启对应扫描和回归。
+发布前在仓库设置确认 Actions、Dependabot alerts 与 Private vulnerability reporting 已启用。远端权限与公开状态由仓库所有者配置，源码准备脚本不会擅自更改。
+
+当前默认发布 Windows 端。安卓源码、手机服务与专用测试尚未进入公开仓库；默认发布扫描会拒绝误加入的伴侣文件。公共网页布局和桌面测试仍需提交。`--include-companion` 只有在后续配套文件齐全且公开范围完成审核时才可使用，不是当前源码的安装或验证步骤。
 
 ## 本地检查与源码包
 
@@ -21,20 +23,20 @@ git tag v0.1.0
 
 ## 推送并生成草稿
 
-替换自己的仓库地址后执行：
+以下为维护者向上游发布的示例；Fork 用户须换成自己的仓库地址：
 
 ```powershell
-git remote add origin https://github.com/YOUR_NAME/cyber-intelligence-agency.git
+git remote add origin https://github.com/mill-ditchy/echo-insight.git
 git push -u origin main
 git push origin v0.1.0
 ```
 
-已有远端时先检查 `git remote -v`，不要重复添加。推荐先确认主分支 CI 成功，再推版本标签。标签触发完整 CI；全部通过后自动生成带源码包、校验值与清单的草稿 Release。确认真实环境登录、抓取、AI 简报、通知与自动任务可用后，通过 GitHub 页面发布草稿；失败时读取对应 Actions 日志修复，不覆盖已经公开发布的版本。
+已有远端时先检查 `git remote -v`，不要重复添加。Fork 用户不能假定具有上游推送权限；文档更新不会自动执行打标签和公开发布。推荐先确认主分支 CI 成功，再推版本标签。标签触发完整 CI；全部通过后自动生成带源码包、校验值与清单的草稿 Release。确认真实环境登录、抓取、AI 简报、通知与自动任务可用后，通过 GitHub 页面发布草稿；失败时读取对应 Actions 日志修复，不覆盖已经公开发布的版本。
 
 本机已完成提交和标签时，也可一次推送两者：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish.ps1 -RepositoryUrl https://github.com/YOUR_NAME/cyber-intelligence-agency.git
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish.ps1 -RepositoryUrl https://github.com/mill-ditchy/echo-insight.git
 ```
 
 该脚本验证干净的 `main`、对应版本标签和源码扫描，再以原子推送提交与标签；远端不一致、认证失败或远端已有冲突历史时停止，不执行强制推送。它不会创建 GitHub 仓库或更改公开状态。首次 HTTPS 推送需要 Git 的 GitHub 认证；应用内 GitHub 连接不等同于命令行推送已登录。

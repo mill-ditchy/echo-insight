@@ -1,1 +1,11 @@
 blank_issues_enabled: false
+contact_links:
+  - name: 使用与安装排查
+    url: https://github.com/mill-ditchy/echo-insight/blob/main/docs/TROUBLESHOOTING.md
+    about: 先检查安装、平台登录、AI 配置与更新说明。
+  - name: 安全漏洞私密报告
+    url: https://github.com/mill-ditchy/echo-insight/blob/main/SECURITY.md
+    about: 查看私密报告流程；入口未启用时仅请求开通，不公开漏洞细节。
+  - name: 贡献指南
+    url: https://github.com/mill-ditchy/echo-insight/blob/main/CONTRIBUTING.md
+    about: 文档、翻译、问题复现和代码贡献均可参与。

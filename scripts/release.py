@@ -13,7 +13,7 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 PUBLIC_DIRECTORIES = {"src", "tests", "scripts", "web", "docs", "LICENSES", ".github", "android"}
 PUBLIC_ROOT_FILES = {
     ".gitattributes", ".gitignore", "VERSION", "LICENSE", "README.md", "CHANGELOG.md",
-    "CONTRIBUTING.md", "SECURITY.md", "app.py", "desktop.py", "webapp.py", "scheduler.py",
+    "CONTRIBUTING.md", "CONTRIBUTORS.md", "SECURITY.md", "app.py", "desktop.py", "webapp.py", "scheduler.py",
     "启动赛博情报局.bat", "mobile_server.py", "启动手机连接.ps1",
 }
 PLACEHOLDERS = {"data/.gitkeep", "output/.gitkeep", "knowledge/images/.gitkeep"}
