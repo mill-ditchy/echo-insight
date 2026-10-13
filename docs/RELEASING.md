@@ -2,6 +2,8 @@
 
 首次发布前先创建空 GitHub 仓库，仓库名建议 `cyber-intelligence-agency`。不要自动生成 README 或 LICENSE。在仓库设置中启用 Actions、Dependabot alerts 与 Private vulnerability reporting；首次上传可以选择私有。远端权限由仓库所有者配置，源码准备脚本不会擅自更改公开状态。
 
+当前默认发布 Windows 端。安卓源码与手机服务保留本机、由忽略规则排除；默认发布扫描会拒绝误加入的伴侣文件。公共网页布局和桌面测试仍需提交。后续伴侣版需单独审核公开范围，再明确使用 `--include-companion` 开启对应扫描和回归。
+
 ## 本地检查与源码包
 
 ```powershell

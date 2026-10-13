@@ -4,9 +4,10 @@ import base64
 import ctypes
 import json
 import os
-import threading
 from ctypes import wintypes
 from pathlib import Path
+
+from ..storage import atomic_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -131,22 +132,11 @@ def save_secret(name: str, value: str) -> Path:
         raise ValueError("不能保存空凭证")
     encrypted = _protect(value.encode("utf-8"))
     path = _secret_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(
-        f"{path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "protection": "windows-dpapi-current-user",
-                "ciphertext": base64.b64encode(encrypted).decode("ascii"),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    temp_path.replace(path)
+    atomic_json(path, {
+        "version": 1,
+        "protection": "windows-dpapi-current-user",
+        "ciphertext": base64.b64encode(encrypted).decode("ascii"),
+    })
     return path
 
 

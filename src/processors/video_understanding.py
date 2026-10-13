@@ -13,6 +13,7 @@ from .media_knowledge import MediaKnowledge, reference_path
 from .character_recognition import CharacterRecognizer
 from .video_analysis_config import atomic_json
 from ..security.cache_paths import cache_file
+from ..ai_protocol import response_text as read_response_text, is_transient_error, is_unsupported_parameter
 
 EVIDENCE_DIR = Path(__file__).resolve().parents[2] / "output" / "video_evidence"
 ANALYZER_VERSION = "1"
@@ -38,10 +39,7 @@ def transcript_quality(text: str, segments: list, duration: float, source_type: 
 
 
 def response_text(response: dict) -> str:
-    content = ((response.get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
-    if not content:
-        raise RuntimeError("AI 接口返回了空片段分析")
-    return content
+    return read_response_text(response, label="片段分析")
 
 
 def parse_evidence(content: str) -> dict:
@@ -151,10 +149,11 @@ source_relationships（分别描述画面、动作模板、对白、音乐的来
                 response = self.client._call_api(messages, self.client.vision_model, attempts=1, max_tokens=2200 if attempt == 0 else 1400, **options)
                 return response, parse_evidence(response_text(response))
             except RuntimeError as exc:
-                if not attempt and options and "http 400" in str(exc).lower() and "reasoning_effort" in str(exc).lower():
+                if not attempt and options and is_unsupported_parameter(exc, "reasoning_effort"):
                     options = {}
                     continue
-                transient = any(marker in str(exc).lower() for marker in ("http 5", "timed out", "timeout", "连接ai接口失败"))
+                # Rate limits are deferred to the durable queue, not retried here immediately.
+                transient = is_transient_error(exc, retry_rate_limits=False)
                 if attempt or not transient:
                     raise
                 # Retry transient failures once with the same media, but ask for
@@ -163,6 +162,7 @@ source_relationships（分别描述画面、动作模板、对白、音乐的来
 
     def analyze(self, bvid: str, title: str, transcript: str, rows: list, segments: list, plan: dict, use_cache=True, progress=None) -> dict:
         records, failures, warnings = [], [], []
+        first_failure = None
         usage = Counter()
         duration = max(s.end for s in segments)
         quality = transcript_quality(transcript, rows, duration, str(plan.get("transcript_type", "")))
@@ -211,6 +211,8 @@ source_relationships（分别描述画面、动作模板、对白、音乐的来
                     atomic_json(path, record)
                     usage.update({k: v for k, v in response.get("usage", {}).items() if isinstance(v, int)})
                 except (RuntimeError, OSError, ValueError) as exc:
+                    if first_failure is None:
+                        first_failure = exc
                     failures.append({"start": segment.start, "end": segment.end, "error": str(exc)[:500]})
                     continue
             if record.get("ocr_error"):
@@ -218,7 +220,7 @@ source_relationships（分别描述画面、动作模板、对白、音乐的来
             records.append(record)
         if not records:
             atomic_json(directory / "manifest.json", {"bvid": bvid, "segments": [], "failures": failures})
-            raise RuntimeError("所有视频片段分析失败：" + (failures[0]["error"] if failures else "缺少画面证据"))
+            raise RuntimeError("所有视频片段分析失败：" + (failures[0]["error"] if failures else "缺少画面证据")) from first_failure
 
         if progress:
             progress("knowledge_lookup")
@@ -263,5 +265,7 @@ source_relationships（分别描述画面、动作模板、对白、音乐的来
             "segment_count": len(records), "expected_segment_count": len(segments),
             "frame_count": sum(r["frame_count"] for r in records), "usage": dict(usage)}
         atomic_json(directory / "manifest.json", result)
+        if plan.get("preserve_on_partial_failure") and failures:
+            raise RuntimeError("本次部分视频片段分析失败，已保留上次成功简报；可稍后重试") from first_failure
         result["path"] = str(directory / "manifest.json")
         return result

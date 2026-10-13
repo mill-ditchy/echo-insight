@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import json
-import os
 import re
 import threading
 import time
@@ -14,12 +13,15 @@ from pathlib import Path
 import requests
 
 from ..security.secret_store import get_opencode_api_key, load_secret
-from ..security.cache_paths import cache_file
+from ..security.cache_paths import cache_file, summary_cache_id
+from ..storage import atomic_json
+from ..storage_lock import interprocess_lock
 from ..ai_provider import (
     PROVIDER_CONFIG_PATH, DEFAULT_API_URL, DEFAULT_MODEL, DEFAULT_VISION_MODEL,
     effective_provider_config, load_provider_config, normalize_api_url,
 )
-from .video_analysis_config import load_settings, atomic_json
+from ..ai_protocol import AIRequestError, http_error, transport_error, response_text
+from .video_analysis_config import load_settings, validate_settings
 from .video_understanding import VideoUnderstanding
 from .media_knowledge import reference_path
 
@@ -32,8 +34,11 @@ MAX_API_ATTEMPTS = 3
 _summary_cache_lock = threading.RLock()
 
 
-class DeepSeekConfigError(RuntimeError):
+class DeepSeekConfigError(AIRequestError):
     """DeepSeek尚未正确配置。"""
+
+    def __init__(self, message):
+        super().__init__(message, category="configuration")
 
 
 @dataclass
@@ -97,13 +102,14 @@ class SummaryResult:
 class DeepSeekSummarizer:
     """DeepSeek字幕总结器，带结果缓存。"""
 
-    def __init__(self) -> None:
-        config = effective_provider_config(self._load_provider_config())
+    def __init__(self, *, provider_config: dict | None = None, analysis_settings: dict | None = None) -> None:
+        config = effective_provider_config(self._load_provider_config()) if provider_config is None else dict(provider_config)
         self.api_url = config["api_url"]
         self.model = config["model"]
         self.vision_enabled = config["vision_enabled"]
         self.vision_model = config["vision_model"]
         self.credential_id = config["credential_id"]
+        self.analysis_settings = validate_settings(analysis_settings) if analysis_settings is not None else None
 
     @staticmethod
     def _load_provider_config() -> dict:
@@ -313,7 +319,7 @@ class DeepSeekSummarizer:
                     allow_redirects=False,
                 )
                 if 300 <= response.status_code < 400:
-                    raise RuntimeError("AI接口返回重定向，已停止发送密钥和正文，请检查接口地址")
+                    raise AIRequestError("AI接口返回重定向，已停止发送密钥和正文，请检查接口地址", category="configuration", status_code=response.status_code)
                 if response.ok:
                     try:
                         data = response.json()
@@ -321,7 +327,7 @@ class DeepSeekSummarizer:
                             raise ValueError("响应不是 JSON 对象")
                         return data
                     except (ValueError, json.JSONDecodeError) as exc:
-                        last_error = RuntimeError("AI接口返回了无效 JSON 数据，请检查 URL 是否为 Chat Completions 接口")
+                        last_error = AIRequestError("AI接口返回了无效 JSON 数据，请检查 URL 是否为 Chat Completions 接口", category="invalid_response")
                         if attempt < attempts:
                             time.sleep(2 if attempt == 1 else 5)
                             continue
@@ -333,9 +339,13 @@ class DeepSeekSummarizer:
                     error = error_data.get("error", {})
                     message = error.get("message") or raw[:300]
                     error_type = error.get("type", "")
+                    error_code = error.get("code", "")
+                    parameter = "reasoning_effort" if error.get("param") == "reasoning_effort" else None
                 except Exception:
                     message = raw[:300] or response.reason
                     error_type = ""
+                    error_code = ""
+                    parameter = None
 
                 common_errors = {
                     401: "API Key无效或已失效",
@@ -350,21 +360,27 @@ class DeepSeekSummarizer:
                         response.status_code,
                         "未知错误",
                     )
+                # Redact again after JSON decoding (e.g. a key returned as \\uXXXX).
+                # Bound untrusted diagnostics before storing or displaying them.
+                friendly = str(friendly).replace(api_key, "[已隐藏密钥]")[:500]
                 if "model is unavailable" in str(friendly).lower() or "model_not_found" in str(friendly).lower():
                     friendly = "当前模型不可用，请在设置中读取可用模型，填写准确的模型 ID 后测试连接。" + str(friendly)[:200]
-                current_error = RuntimeError(
-                    f"AI API错误 HTTP {response.status_code}: {friendly}"
-                )
-                if response.status_code != 429 and response.status_code < 500:
+                if parameter is None and "reasoning_effort" in friendly.casefold():
+                    parameter = "reasoning_effort"
+                current_error = http_error(response.status_code, friendly, error_type=error_type,
+                                           error_code=error_code, parameter=parameter)
+                if not current_error.retryable:
                     raise current_error
                 last_error = current_error
             except requests.RequestException as exc:
-                last_error = RuntimeError(f"连接AI接口失败: {str(exc).replace(api_key, '[已隐藏密钥]')}")
+                last_error = transport_error(exc, api_key)
+                if not last_error.retryable:
+                    raise last_error from None
 
             if attempt < attempts:
                 time.sleep(2 if attempt == 1 else 5)
 
-        raise last_error or RuntimeError("连接AI接口失败")
+        raise last_error or AIRequestError("连接AI接口失败", category="connection")
 
     @staticmethod
     def normalize_summary_text(content: str) -> str:
@@ -479,12 +495,7 @@ class DeepSeekSummarizer:
                 ],
                 self.model,
             )
-            repaired = (
-                (response.get("choices") or [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
+            repaired = response_text(response, label="修订结果")
             if repaired and not self._unsafe_source_claims(repaired, summary_plan):
                 return repaired
         except Exception:
@@ -528,7 +539,9 @@ class DeepSeekSummarizer:
 
     @staticmethod
     def _save_cache(result: SummaryResult) -> None:
-        with _summary_cache_lock:
+        from ..task_context import verify_result_owner
+        verify_result_owner()
+        with _summary_cache_lock, interprocess_lock(result.cache_path):
             SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
             if result.cache_path.exists():
                 try:
@@ -539,14 +552,7 @@ class DeepSeekSummarizer:
                         atomic_json(SUMMARY_DIR.parent / "summary_history" / result.bvid / f"{archive_key}.json", previous)
                 except (OSError, ValueError, TypeError):
                     pass
-            temp_path = result.cache_path.with_name(
-                f"{result.cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            temp_path.write_text(
-                json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temp_path.replace(result.cache_path)
+            atomic_json(result.cache_path, result.to_dict())
 
     def summarize(
         self,
@@ -570,7 +576,9 @@ class DeepSeekSummarizer:
             raise ValueError("没有可用字幕或关键帧，无法进行AI总结")
         selected_model = self.vision_model if frames else self.model
         plan = dict(summary_plan or {})
-        settings = load_settings()
+        settings = getattr(self, "analysis_settings", None)
+        if settings is None:
+            settings = load_settings()
         analyzer = VideoUnderstanding(self, settings) if frames and segments and settings["enabled"] else None
         if analyzer:
             plan["video_analysis_fingerprint"] = analyzer.fingerprint()
@@ -593,8 +601,6 @@ class DeepSeekSummarizer:
         messages = self._build_messages(title, transcript, frames, plan)
         if analyzer:
             evidence = analyzer.analyze(bvid, title, transcript, transcript_segments or [], segments, plan, use_cache, progress_callback)
-            if plan.get("preserve_on_partial_failure") and evidence.get("failures"):
-                raise RuntimeError("本次部分视频片段分析失败，已保留上次成功简报；可稍后重试")
             timeline = [{"start": r["start"], "end": r["end"], "evidence": r["evidence"], "ocr": r["ocr"]} for r in evidence["segments"]]
             extra = (
                 "\n分段画面证据（已覆盖的时间范围）：" + json.dumps(timeline, ensure_ascii=False)
@@ -628,15 +634,7 @@ class DeepSeekSummarizer:
             if progress_callback:
                 progress_callback("summarizing")
         response = self._call_api(messages, selected_model)
-        choices = response.get("choices", [])
-        if not choices:
-            raise RuntimeError("AI 接口响应中没有生成结果")
-        if choices[0].get("finish_reason") in {"length", "content_filter"}:
-            raise RuntimeError("模型输出被截断或未完整返回，本次结果未保存，请稍后重试")
-
-        content = (choices[0].get("message", {}).get("content") or "").strip()
-        if not content:
-            raise RuntimeError("AI 接口返回了空摘要")
+        content = response_text(response)
 
         violations = self._unsafe_source_claims(content, summary_plan)
         if violations:
@@ -695,7 +693,7 @@ class DeepSeekSummarizer:
         content = content.strip()
         if not content:
             raise ValueError("正文内容为空，无法进行AI总结")
-        cache_id = f"zhihu_{document_id}"
+        cache_id = summary_cache_id("zhihu", document_id)
         cache_file(SUMMARY_DIR, cache_id)
         plan = {
             "version": "zhihu-document-v1",
@@ -731,12 +729,7 @@ class DeepSeekSummarizer:
             },
         ]
         response = self._call_api(messages, self.model)
-        choices = response.get("choices", [])
-        if not choices:
-            raise RuntimeError("DeepSeek响应中没有生成结果")
-        summary = (choices[0].get("message", {}).get("content") or "").strip()
-        if not summary:
-            raise RuntimeError("DeepSeek返回了空摘要")
+        summary = response_text(response)
         summary = self.normalize_summary_text(summary)
         result = SummaryResult(
             bvid=cache_id,

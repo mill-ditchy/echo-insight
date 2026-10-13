@@ -18,9 +18,10 @@ def main() -> int:
     import webapp
     from src import __version__
 
-    with patch.object(webapp, "_scheduler_status", return_value={"available": False, "state": "not_installed"}):
-        client = TestClient(webapp.app)
-        for endpoint in ("/", "/static/app.js", "/static/styles.css", "/api/dashboard", "/api/sources", "/api/settings", "/api/knowledge"):
+    with (patch.object(webapp, "_scheduler_status", return_value={"available": False, "state": "not_installed"}),
+          patch("src.task_worker.ensure_worker", side_effect=AssertionError("Empty startup must not start an analysis worker")),
+          TestClient(webapp.app) as client):
+        for endpoint in ("/", "/static/app.js", "/static/styles.css", "/static/mobile.css", "/static/settings.css", "/api/dashboard", "/api/sources", "/api/settings", "/api/knowledge", "/api/tasks"):
             response = client.get(endpoint, headers={"X-Cyber-Request": "1"})
             if response.status_code != 200:
                 raise RuntimeError(f"Clean startup failed at {endpoint}: HTTP {response.status_code}")

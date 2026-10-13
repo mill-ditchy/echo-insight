@@ -13,6 +13,7 @@ from PIL import Image
 from . import character_models as models
 from .media_knowledge import reference_path, normalize
 from .video_analysis_config import atomic_json
+from ..ai_protocol import response_text, is_transient_error, is_unsupported_parameter
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "character_recognition.json"
@@ -39,10 +40,7 @@ def settings():
 
 
 def parse_json(response):
-    raw = response["choices"][0]["message"]["content"]
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("角色识别返回了空内容或非文本内容")
-    raw = raw.strip()
+    raw = response_text(response, label="角色识别结果")
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
     data = json.loads(raw)
@@ -114,10 +112,10 @@ class CharacterRecognizer:
                 response = self.client._call_api(messages, self.client.vision_model, attempts=1, max_tokens=max_tokens, timeout=(8, 75), **options)
                 break
             except RuntimeError as exc:
-                if not attempt and options and "400" in str(exc) and "reasoning_effort" in str(exc):
+                if not attempt and options and is_unsupported_parameter(exc, "reasoning_effort"):
                     options = {}
                     continue
-                if not attempt and any(s in str(exc).lower() for s in ("http 5", "timed out", "timeout", "连接ai接口失败")):
+                if not attempt and is_transient_error(exc, retry_rate_limits=False):
                     continue
                 raise
         self.usage.update({k: v for k, v in response.get("usage", {}).items() if type(v) is int})

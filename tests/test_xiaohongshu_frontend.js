@@ -9,7 +9,7 @@ const context = {URL, document: {querySelector(selector) {
 }}};
 const source = fs.readFileSync(path.join(__dirname, '../web/static/app.js'), 'utf8');
 vm.runInNewContext(source.slice(0, source.lastIndexOf('\ninitializeFontSettings();')), context);
-const item = {platform: 'xiaohongshu', article_id: 'xhs_' + 'a'.repeat(24),
+const item = {platform: 'xiaohongshu', content_type: 'image_note', article_id: 'xhs_' + 'a'.repeat(24),
   title: '<img src=x onerror=alert(1)>', description: '正文<内容>', images: ['https://example.com/ignored'],
   image_count: 9, tags: ['话题'], ai_summary: '摘要', ai_analysis_mode: 'note_visual', ai_frame_count: 6,
   ai_completeness: 'partial', ai_analysis_warnings: ['只分析前6张'], link: 'https://www.xiaohongshu.com/explore/' + 'a'.repeat(24)};
@@ -90,3 +90,18 @@ assert.equal(detail.detail_available, true);
 assert.equal(detail.desc, '正文');
 assert.equal(detail.imageList.length, 1);
 console.log('Xiaohongshu text-only UI and page extraction checks passed.');
+
+const video = {...item, content_type:'video', ai_summary:'视频语音与画面总结', ai_status:'available'};
+assert.equal(context.isImageNote(video),false);
+context.renderBriefing(video);
+assert.equal(nodes.get('#briefing-note-image-help').hidden,true);
+assert.ok(nodes.get('#briefing-summary').textContent.includes('原视频'));
+assert.ok(context.noteAnalysisButtons(video).includes('重新分析视频'));
+assert.ok(context.noteAnalysisButtons(video).includes('data-platform="xiaohongshu"'));
+assert.ok(!context.noteAnalysisButtons(video).includes('完整分析图文'));
+assert.ok(context.summaryText({...video,ai_summary:'',ai_status:'processing',ai_stage:'frames'}).includes('关键帧'));
+page.window.__INITIAL_STATE__.note.noteDetailMap[id].note = {noteId:id,type:'video',video:{media:{stream:{h264:[{masterUrl:'https://sns-video-qc.xhscdn.com/video.mp4'}]}}}};
+const videoDetail=vm.runInNewContext(expression('DETAIL_EXPRESSION'),page);
+assert.equal(videoDetail.type,'video');
+assert.ok(videoDetail.video.media.stream.h264[0].masterUrl.includes('xhscdn.com'));
+console.log('Xiaohongshu video type, processing labels, detail extraction and reanalysis checks passed.');

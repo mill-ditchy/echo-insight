@@ -26,6 +26,17 @@ knowledge/images/*
 !knowledge/images/.gitkeep
 
 # Local agent state, editor settings and scratch files
+# Companion sources stay local until their later release; shared web UI stays public.
+/android/
+/mobile_server.py
+/启动手机连接.ps1
+/requirements-mobile.txt
+/docs/ANDROID.md
+/scripts/build_android.py
+/scripts/preview_mobile.py
+/src/security/mobile_access.py
+/tests/test_mobile_access.py
+
 .agents/
 .codex/
 .idea/

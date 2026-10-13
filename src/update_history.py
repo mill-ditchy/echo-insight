@@ -1,22 +1,26 @@
 """保存真正的新内容，并记录用户是否已经查看。"""
 
 import json
-import os
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .state_manager import article_id
+from .content_identity import article_id
+from .history_state import apply_attempt
 from .storage_lock import interprocess_lock
-from .security.cache_paths import cache_file
+from .storage import atomic_json
+from .security.cache_paths import cache_file, summary_cache_id
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = PROJECT_ROOT / "data" / "update_history.json"
+DEFAULT_DATA_PATH = DATA_PATH
 SUMMARY_DIR = PROJECT_ROOT / "output" / "summaries"
 MAX_ITEMS = 1000
 _data_lock = threading.RLock()
-ANALYSIS_FIELDS = ("ai_segment_count", "ai_completeness", "ai_input_mode", "ai_evidence_file", "ai_analysis_warnings", "ai_fallback_reason", "ai_note_reading_mode", "ai_note_evidence", "ai_image_numbers", "requested_note_reading_mode")
+_configured_backends = {}
+ANALYSIS_FIELDS = ("ai_segment_count", "ai_completeness", "ai_input_mode", "ai_evidence_file", "ai_analysis_warnings", "ai_fallback_reason", "ai_note_reading_mode", "ai_note_evidence", "ai_image_numbers", "requested_note_reading_mode", "ai_execution_config", "ai_execution_config_hash")
 NOTE_FIELDS = ("note_id", "images", "image_count", "cover_url", "tags", "detail_status", "fetch_warning", "author_avatar", "media_urls", "duration")
 
 
@@ -30,7 +34,69 @@ def _empty() -> dict:
     return {"version": 1, "items": []}
 
 
+def uses_sqlite() -> bool:
+    """Production uses SQLite; alternate JSON paths remain available for rollback."""
+    backend = _configured_backends.get(DATA_PATH)
+    if backend is not None:
+        return backend == "sqlite"
+    # Alternate paths retain the old compatibility API. Production entry points
+    # explicitly configure the backend before any writes.
+    return DATA_PATH == DEFAULT_DATA_PATH or DATA_PATH.with_suffix(".sqlite3").exists()
+
+
+def initialize_storage(backend="sqlite"):
+    if backend not in {"sqlite", "json"}:
+        raise ValueError("历史存储类型无效")
+    _configured_backends[DATA_PATH] = backend
+    if backend == "sqlite":
+        database().initialize()
+
+
+@contextmanager
+def history_transaction():
+    """Public write boundary also used for atomic task/result publication."""
+    with _data_lock, interprocess_lock(DATA_PATH):
+        store = database()
+        store.initialize()
+        with store.connection() as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+
+
+def get_update(platform, current_article_id):
+    if uses_sqlite() and database().path.exists():
+        with database().read_connection() as db:
+            return database().get_content(db, platform, current_article_id)
+    return next((item for item in _load_json()["items"] if item.get("platform") == platform
+                 and str(item.get("article_id")) == str(current_article_id)), None)
+
+
+def apply_task_result(db, job, state, error="", article=None, stage=None):
+    item = database().get_content(db, job["platform"], job["content_id"])
+    if item is None:
+        raise RuntimeError("分析任务对应内容不存在")
+    status = {"succeeded": "available", "retry_wait": "pending", "failed": "error", "running": "processing", "cancelled": "cancelled"}[state]
+    phase = stage or {"succeeded": "completed", "retry_wait": "waiting", "failed": "failed", "cancelled": "cancelled"}.get(state, "")
+    result = {key: value for key, value in (article or {}).items()
+              if key.startswith(("ai_", "visual_", "summary_")) or key in NOTE_FIELDS}
+    apply_attempt(item, status, error=error, stage=phase, result=result,
+                  attempt_status="processing" if state == "retry_wait" else None)
+    database().update_content(db, item)
+    return item
+
+
+def database():
+    from .reliability_db import ReliabilityDB
+    return ReliabilityDB(DATA_PATH)
+
+
 def _load() -> dict:
+    if uses_sqlite():
+        return database().load_history()
+    return _load_json()
+
+
+def _load_json() -> dict:
     if not DATA_PATH.exists():
         return _empty()
     try:
@@ -45,21 +111,54 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = DATA_PATH.with_name(
-        f"{DATA_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(DATA_PATH)
+    if uses_sqlite():
+        database().save_history(data)
+    else:
+        atomic_json(DATA_PATH, data)
 
 
-def _read_summary_cache(current_article_id: str) -> dict | None:
+def _load_article_data(articles):
+    if not uses_sqlite():
+        return _load_json()
+    store = database()
+    store.initialize()
+    keys = dict.fromkeys((str(a.get("platform", "")), article_id(a)) for a in articles)
+    with store.connection() as db:
+        items = [item for platform, ident in keys if (item := store.get_content(db, platform, ident))]
+    return {"version": 1, "items": items}
+
+
+def _save_article_data(data, *, promote):
+    if not uses_sqlite():
+        _save(data)
+        return
+    with database().connection() as db, db:
+        database().save_records(db, data["items"], promote=promote)
+
+
+def mutate_update(platform, current_article_id, change):
+    if uses_sqlite():
+        with history_transaction() as db:
+            item = database().get_content(db, platform, current_article_id)
+            if item is None:
+                return None
+            change(item)
+            database().update_content(db, item)
+            return item
+    with _data_lock, interprocess_lock(DATA_PATH):
+        data = _load_json()
+        item = next((i for i in data["items"] if i.get("platform") == platform
+                     and str(i.get("article_id")) == str(current_article_id)), None)
+        if item is not None:
+            change(item)
+            _save(data)
+        return item
+
+
+def _read_summary_cache(current_article_id: str, platform: str = "") -> dict | None:
     """读取已经成功落盘的AI简报，不重新调用任何接口。"""
     try:
-        cache_path = cache_file(SUMMARY_DIR, current_article_id)
+        cache_path = cache_file(SUMMARY_DIR, summary_cache_id(platform, current_article_id))
     except ValueError:
         return None
     if not cache_path.exists():
@@ -78,7 +177,13 @@ def _recover_item_from_summary_cache(item: dict) -> bool:
     current_id = str(item.get("article_id", ""))
     if not current_id:
         return False
-    cached = _read_summary_cache(current_id)
+    if uses_sqlite():
+        with database().connection() as db:
+            # A running attempt publishes cache first and history transactionally
+            # afterward. Readers must not promote its uncommitted result.
+            if db.execute("SELECT 1 FROM jobs WHERE platform=? AND content_id=? AND state='running'", (str(item.get("platform", "")), current_id)).fetchone():
+                return False
+    cached = _read_summary_cache(current_id, str(item.get("platform", "")))
     if not cached:
         return False
 
@@ -101,6 +206,13 @@ def _recover_item_from_summary_cache(item: dict) -> bool:
     previous_error = str(item.get("ai_error", ""))
     item["ai_status"] = "available"
     item["ai_summary"] = content
+    # Legacy caches do not identify the producing execution configuration.
+    # Do not label a restored result with an unrelated attempt's settings.
+    for field in ("ai_execution_config", "ai_execution_config_hash"):
+        if field in cached:
+            item[field] = cached[field]
+        else:
+            item.pop(field, None)
     item["ai_model"] = cached.get("model", item.get("ai_model", ""))
     item["ai_analysis_mode"] = cached.get(
         "analysis_mode",
@@ -136,8 +248,23 @@ def sync_history_from_summary_cache(
     platform: str | None = None,
 ) -> int:
     """用本地成功缓存修复历史记录；返回修复条数。"""
+    if uses_sqlite():
+        with history_transaction() as db:
+            clauses, params = [], []
+            if source_uid is not None:
+                clauses.append("source_uid=?"); params.append(str(source_uid))
+            if platform is not None:
+                clauses.append("platform=?"); params.append(platform)
+            query = "SELECT payload FROM contents" + (" WHERE " + " AND ".join(clauses) if clauses else "")
+            changed = 0
+            for row in list(db.execute(query, params)):
+                item = json.loads(row[0])
+                if _recover_item_from_summary_cache(item):
+                    database().update_content(db, item)
+                    changed += 1
+            return changed
     with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
+        data = _load_json()
         changed = 0
         for item in data["items"]:
             if source_uid is not None and str(item.get("source_uid", "")) != str(source_uid):
@@ -160,7 +287,7 @@ def refresh_history_metadata(articles: list[dict]) -> int:
         for article in articles
     }
     with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
+        data = _load_article_data(articles)
         changed = 0
         for item in data["items"]:
             key = f"{item.get('platform', '')}:{item.get('article_id', '')}"
@@ -192,7 +319,7 @@ def refresh_history_metadata(articles: list[dict]) -> int:
             if item_changed:
                 changed += 1
         if changed:
-            _save(data)
+            _save_article_data(data, promote=False)
         return changed
 
 
@@ -202,7 +329,7 @@ def record_updates(articles: list[dict]) -> list[dict]:
         return []
 
     with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
+        data = _load_article_data(articles)
         existing = {
             f"{item.get('platform', '')}:{item.get('article_id', '')}": item
             for item in data["items"]
@@ -272,7 +399,11 @@ def record_updates(articles: list[dict]) -> list[dict]:
                     )
                     item["ai_error"] = ""
                     _copy_analysis_fields(item, old)
+                    for field in ("ai_execution_config", "ai_execution_config_hash"):
+                        if field not in old:
+                            item.pop(field, None)
             for field in (
+                "read_at",
                 "ai_updated_at",
                 "last_attempt_at",
                 "last_attempt_status",
@@ -294,34 +425,28 @@ def record_updates(articles: list[dict]) -> list[dict]:
             if f"{item.get('platform', '')}:{item.get('article_id', '')}"
             not in recorded_keys
         ]
-        data["items"] = (recorded + untouched)[:MAX_ITEMS]
-        _save(data)
+        data["items"] = recorded + untouched
+        _save_article_data(data, promote=True)
         return recorded
 
 
 def list_updates(
     source_uid: str | None = None,
-    limit: int = 200,
+    limit: int | None = 200,
     platform: str | None = None,
+    offset: int = 0,
 ) -> list[dict]:
-    with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
-        changed = False
-        for item in data["items"]:
-            if source_uid is not None and str(item.get("source_uid", "")) != str(source_uid):
-                continue
-            if platform is not None and item.get("platform") != platform:
-                continue
-            changed = _recover_item_from_summary_cache(item) or changed
-        if changed:
-            _save(data)
+    with _data_lock:
+        if uses_sqlite() and database().path.exists():
+            return database().query_history(source_uid=source_uid, platform=platform, limit=limit, offset=offset)
+        data = _load_json()
         items = data["items"]
         if source_uid is not None:
             source_uid = str(source_uid)
             items = [item for item in items if str(item.get("source_uid", "")) == source_uid]
         if platform is not None:
             items = [item for item in items if item.get("platform") == platform]
-        return items[: max(0, limit)]
+        return items[max(0, offset):] if limit is None else items[max(0, offset):max(0, offset) + max(0, limit)]
 
 
 def record_baseline_preview(articles: list[dict]) -> list[dict]:
@@ -330,7 +455,7 @@ def record_baseline_preview(articles: list[dict]) -> list[dict]:
         return []
 
     with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
+        data = _load_article_data(articles)
         detected_at = datetime.now().astimezone().isoformat(timespec="seconds")
         existing = {
             f"{item.get('platform', '')}:{item.get('article_id', '')}": item
@@ -408,8 +533,8 @@ def record_baseline_preview(articles: list[dict]) -> list[dict]:
                 if f"{item.get('platform', '')}:{item.get('article_id', '')}"
                 not in saved_preview_keys
             ]
-            data["items"] = (previews + untouched)[:MAX_ITEMS]
-            _save(data)
+            data["items"] = previews + untouched
+            _save_article_data(data, promote=True)
         return previews
 
 
@@ -430,67 +555,38 @@ def update_ai_result(
     analysis_details: dict | None = None,
 ) -> dict | None:
     """更新AI处理状态；默认绝不让成功简报被后续失败降级。"""
-    with _data_lock, interprocess_lock(DATA_PATH):
-        data = _load()
-        for item in data["items"]:
-            if (
-                item.get("platform") == platform
-                and str(item.get("article_id")) == str(current_article_id)
-            ):
-                now = datetime.now().astimezone().isoformat(timespec="seconds")
-                _recover_item_from_summary_cache(item)
-                has_success = (
-                    item.get("ai_status") == "available"
-                    and bool(str(item.get("ai_summary", "")).strip())
-                )
-                item["last_attempt_at"] = now
-                item["last_attempt_status"] = status
-                item["last_attempt_error"] = error[:500]
-                if analysis_details and analysis_details.get("requested_note_reading_mode") in {"quick", "full"}:
-                    item["requested_note_reading_mode"] = analysis_details["requested_note_reading_mode"]
-                if stage:
-                    item["ai_stage"] = stage
-
-                if has_success and status != "available" and not force:
-                    # 保留可展示的成功结果，只记录这次重试发生了什么。
-                    _save(data)
-                    return item
-
-                if status == "available" and not str(ai_summary).strip():
-                    # “成功但没有内容”不是有效成功，且不能清空已有结果。
-                    if has_success and not force:
-                        _save(data)
-                        return item
-                    status = "error"
-                    error = error or "AI接口返回了空简报"
-
-                item["ai_status"] = status
-                if status == "available":
-                    item["ai_stage"] = "completed"
-                elif status == "error":
-                    item["ai_stage"] = "failed"
-                if ai_summary or force:
-                    item["ai_summary"] = ai_summary
-                if ai_model or force:
-                    item["ai_model"] = ai_model
-                if analysis_mode or force:
-                    item["ai_analysis_mode"] = analysis_mode
-                    item["ai_frame_count"] = int(frame_count)
-                    item["visual_error"] = visual_error[:500]
-                    if analysis_details is not None:
-                        _copy_analysis_fields(item, analysis_details)
-                if summary_strategy or force:
-                    item["summary_strategy"] = summary_strategy
-                    item["summary_router_version"] = router_version
-                item["ai_error"] = error[:500]
-                item["ai_updated_at"] = now
-                _save(data)
-                return item
-        return None
+    result = {"ai_summary": ai_summary}
+    for name, value in (("ai_model", ai_model), ("ai_analysis_mode", analysis_mode),
+                        ("summary_strategy", summary_strategy), ("summary_router_version", router_version)):
+        if value or force:
+            result[name] = value
+    if analysis_mode or force:
+        result.update(ai_frame_count=int(frame_count), visual_error=visual_error[:500])
+        _copy_analysis_fields(result, analysis_details or {})
+    elif analysis_details and "requested_note_reading_mode" in analysis_details:
+        result["requested_note_reading_mode"] = analysis_details["requested_note_reading_mode"]
+    def change(item):
+        _recover_item_from_summary_cache(item)
+        return apply_attempt(item, status, error=error, stage=stage, result=result, force=force)
+    return mutate_update(platform, current_article_id, change)
 
 
 def reset_ai_errors(source_uid: str, platform: str | None = None) -> int:
     """把某位博主失败的初始简报恢复为等待处理。"""
+    if uses_sqlite():
+        recovered = sync_history_from_summary_cache(source_uid, platform)
+        with history_transaction() as db:
+            query = "SELECT payload FROM contents WHERE source_uid=? AND ai_status='error'"
+            params = [str(source_uid)]
+            if platform is not None:
+                query += " AND platform=?"; params.append(platform)
+            changed = 0
+            for row in list(db.execute(query, params)):
+                item = json.loads(row[0])
+                apply_attempt(item, "pending", stage="waiting")
+                database().update_content(db, item)
+                changed += 1
+            return changed + recovered
     with _data_lock, interprocess_lock(DATA_PATH):
         data = _load()
         changed = 0
@@ -514,6 +610,17 @@ def reset_ai_errors(source_uid: str, platform: str | None = None) -> int:
 def reset_ai_credential_errors(credential_name: str) -> int:
     """只恢复因指定本机凭证不可读而失败的AI简报。"""
     expected_error = f"本机凭证无法解密：{credential_name}"
+    if uses_sqlite():
+        with history_transaction() as db:
+            changed = 0
+            for row in list(db.execute("SELECT payload FROM contents WHERE platform='bilibili' AND ai_status='error'")):
+                item = json.loads(row[0])
+                if expected_error not in str(item.get("ai_error", "")):
+                    continue
+                apply_attempt(item, "pending", stage="waiting")
+                database().update_content(db, item)
+                changed += 1
+            return changed
     with _data_lock, interprocess_lock(DATA_PATH):
         data = _load()
         changed = 0
@@ -538,7 +645,7 @@ def reset_ai_credential_errors(credential_name: str) -> int:
 def dashboard_updates(history: list[dict] | None = None) -> tuple[list[dict], int]:
     """有未读时返回全部未读；全部已读时返回最近一批。"""
     if history is None:
-        history = list_updates(limit=MAX_ITEMS)
+        history = list_updates(limit=None)
     items = [
         item for item in history if not item.get("is_baseline")
     ]
@@ -553,6 +660,22 @@ def dashboard_updates(history: list[dict] | None = None) -> tuple[list[dict], in
 
 def mark_update_read(platform: str, current_article_id: str) -> dict | None:
     """只标记一条更新为已读，并返回同步后的未读统计。"""
+    if uses_sqlite():
+        with history_transaction() as db:
+            target = database().get_content(db, platform, current_article_id)
+            if target is None:
+                return None
+            changed = not bool(target.get("read"))
+            if changed:
+                read_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                target.update(read=True, read_at=read_at)
+                database().update_content(db, target)
+                database().set_metadata(db, "last_read_at", read_at)
+            source_uid = str(target.get("source_uid", ""))
+            unread_count = db.execute("SELECT COUNT(*) FROM contents WHERE unread=1 AND baseline=0").fetchone()[0]
+            source_count = db.execute("SELECT COUNT(*) FROM contents WHERE unread=1 AND baseline=0 AND platform=? AND source_uid=?", (platform, source_uid)).fetchone()[0]
+            return {"changed": changed, "article_id": str(current_article_id), "platform": platform,
+                    "source_uid": source_uid, "unread_count": unread_count, "source_unread_count": source_count}
     with _data_lock, interprocess_lock(DATA_PATH):
         data = _load()
         target = next(
@@ -598,6 +721,13 @@ def mark_update_read(platform: str, current_article_id: str) -> dict | None:
 
 
 def mark_all_read() -> int:
+    if uses_sqlite():
+        with history_transaction() as db:
+            read_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            changed = db.execute("UPDATE contents SET unread=0,payload=json_set(payload,'$.read',json('true'),'$.read_at',?) WHERE unread=1", (read_at,)).rowcount
+            if changed:
+                database().set_metadata(db, "last_read_at", read_at)
+            return changed
     with _data_lock, interprocess_lock(DATA_PATH):
         data = _load()
         changed = 0

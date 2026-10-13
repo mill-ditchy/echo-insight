@@ -1,15 +1,14 @@
 """用临时 Edge 读取小红书页面公开状态与内容卡片。"""
 
-import os
-import subprocess
-import tempfile
 import time
-from contextlib import contextmanager
-from http.cookies import SimpleCookie
-from pathlib import Path
 
-from . import zhihu_browser as edge
+from . import browser_runtime as edge
+from .browser_runtime import browser_context
+
 from .xiaohongshu import ID_PATTERN, note_link
+
+def browser(cookie: str, *, domain: str = "xiaohongshu.com"):
+    return browser_context(cookie, domain=domain)
 
 MAX_SCAN_CARDS = 120
 MAX_SCROLLS = 8
@@ -75,20 +74,24 @@ DETAIL_EXPRESSION = r"""
   const note = map[id]?.note;
   if (note) return {id, noteId: note.noteId || id, type: note.type,
     title: note.title, desc: note.desc, user: note.user, time: note.time,
-    imageList: note.imageList, tagList: note.tagList, detail_available: true};
+    imageList: note.imageList, video: note.video, tagList: note.tagList, detail_available: true};
   const root = document.querySelector('.note-detail-mask, .note-container, .note-detail');
   const desc = root?.querySelector('#detail-desc, .desc');
   if (!root || !desc) return null;
   const images = Array.from(root.querySelectorAll('.swiper-slide img')).map(img => ({url: img.src}));
   const author = root.querySelector('a[href*="/user/profile/"]')?.href.match(/profile\/([a-f0-9]{24})/i)?.[1];
-  return {id, type: 'normal', title: root.querySelector('#detail-title, .title')?.textContent?.trim() || '',
-    desc: desc.innerText, user: {userId: author}, imageList: images, detail_available: true};
+  const video = root.querySelector('video');
+  return {id, type: video ? 'video' : 'normal', title: root.querySelector('#detail-title, .title')?.textContent?.trim() || '',
+    desc: desc.innerText, user: {userId: author}, imageList: images,
+    media_urls: video ? [video.currentSrc || video.src, ...Array.from(video.querySelectorAll('source')).map(s => s.src)].filter(Boolean) : [],
+    video: video ? {capa: {duration: Number.isFinite(video.duration) ? video.duration : 0}} : undefined,
+    detail_available: true};
 })()
 """
 
 
 def check_access(client) -> None:
-    page = edge._evaluate(client, "({url: location.href, title: document.title, text: document.body?.innerText?.slice(0, 1800) || ''})") or {}
+    page = edge.evaluate(client, "({url: location.href, title: document.title, text: document.body?.innerText?.slice(0, 1800) || ''})") or {}
     url, title, text = str(page.get("url", "")), str(page.get("title", "")), str(page.get("text", ""))
     if any(marker in url.lower() for marker in ("captcha", "/website-login/captcha")) or any(marker in title + text for marker in ("安全验证", "访问频次异常", "请完成验证", "请求过于频繁")):
         raise XiaohongshuAccessError("verification_required", "小红书需要安全验证或已限流，本次读取已停止；请在官方窗口处理后稍后重试")
@@ -104,54 +107,6 @@ def check_access(client) -> None:
                 kind = "login_required" if response.get("status") == 401 else "verification_required"
                 raise XiaohongshuAccessError(kind, "小红书拒绝读取或要求验证，请检查登录状态并稍后重试")
             break
-
-
-@contextmanager
-def browser(cookie: str, *, domain: str = "xiaohongshu.com"):
-    """沿用已验证的 Edge/CDP 连接，Cookie 仅放入小红书域名。"""
-    with tempfile.TemporaryDirectory(prefix="cyber-xhs-edge-", ignore_cleanup_errors=True) as directory:
-        process = subprocess.Popen([
-            str(edge._edge_path()), "--headless=new", "--disable-gpu", "--disable-breakpad",
-            "--disable-crash-reporter", "--no-first-run", "--no-default-browser-check",
-            "--remote-debugging-port=0", f"--user-data-dir={directory}", "about:blank",
-        ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=0x08000000 if os.name == "nt" else 0)
-        sockets, controller = [], None
-        try:
-            port, path = edge._wait_for_devtools_file(Path(directory) / "DevToolsActivePort", process)
-            sock = edge._WebSocket("127.0.0.1", port, path)
-            sockets.append(sock)
-            controller = edge._CdpClient(sock)
-            host, page_port, page_path = edge._websocket_parts(edge._new_page_websocket(port))
-            sock = edge._WebSocket(host, page_port, page_path)
-            sockets.append(sock)
-            client = edge._CdpClient(sock)
-            for method in ("Network.enable", "Page.enable", "Runtime.enable"):
-                client.call(method)
-            parsed = SimpleCookie()
-            parsed.load(cookie)
-            cookies = [{"name": name, "value": entry.value, "domain": "." + domain,
-                        "path": "/", "secure": True} for name, entry in parsed.items()]
-            if cookies:
-                client.call("Network.setCookies", {"cookies": cookies})
-            yield client
-        finally:
-            if controller:
-                try:
-                    controller.call("Browser.close", timeout=3)
-                except Exception:
-                    pass
-            for sock in sockets:
-                sock.close()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=3)
 
 
 def _card_id(card):
@@ -192,23 +147,23 @@ def load_profile(uid: str, cookie: str, profile_url: str = "", *, seen_ids=None,
         client.call("Page.navigate", {"url": profile_url or f"https://www.xiaohongshu.com/user/profile/{uid}"})
         client.drain(5)
         check_access(client)
-        result = edge._evaluate(client, PROFILE_EXPRESSION) or {}
+        result = edge.evaluate(client, PROFILE_EXPRESSION) or {}
         collected = {_card_id(n): n for n in result.get("notes", []) if ID_PATTERN.fullmatch(_card_id(n))}
         scan_warning = ""
         stalled = 0
         for step in range(MAX_SCROLLS if incremental else 2):
-            normal = [n for n in result.get("notes", []) if n.get("type") == "normal"]
+            supported = [n for n in collected.values() if n.get("type") in {"normal", "image", "video"}]
             _, reached_anchor = _catchup_cards(list(collected.values()), anchors)
-            if result.get("empty_confirmed") or result.get("end_confirmed") or (incremental and reached_anchor) or (not incremental and len(normal) >= 6):
+            if result.get("empty_confirmed") or result.get("end_confirmed") or (incremental and reached_anchor) or (not incremental and len(supported) >= 6):
                 break
             if len(collected) >= MAX_SCAN_CARDS or time.monotonic() - started >= MAX_READ_SECONDS:
                 scan_warning = "达到本次补抓范围上限，可能仍有未发现内容，请稍后再次检查或查看原主页"
                 break
             before = len(collected)
-            edge._evaluate(client, "window.scrollTo(0, document.body.scrollHeight)")
+            edge.evaluate(client, "window.scrollTo(0, document.body.scrollHeight)")
             client.drain(2)
             check_access(client)
-            result = edge._evaluate(client, PROFILE_EXPRESSION) or {}
+            result = edge.evaluate(client, PROFILE_EXPRESSION) or {}
             collected.update({_card_id(n): n for n in result.get("notes", []) if ID_PATTERN.fullmatch(_card_id(n))})
             if len(collected) > MAX_SCAN_CARDS:
                 collected = {_card_id(n): n for n in _ordered_cards(list(collected.values()))[:MAX_SCAN_CARDS]}
@@ -222,12 +177,12 @@ def load_profile(uid: str, cookie: str, profile_url: str = "", *, seen_ids=None,
         else:
             if incremental:
                 scan_warning = "达到本次滚动上限，尚未确认补抓到上次位置；请稍后重试"
-        cards = [n for n in collected.values() if n.get("type") in {"normal", "image"}]
-        result["video_only"] = bool(collected) and not cards
+        cards = [n for n in collected.values() if n.get("type") in {"normal", "image", "video"}]
+        result["video_only"] = bool(cards) and all(n.get("type") == "video" for n in cards)
         result["video_anchor_ids"] = [_card_id(n) for n in collected.values() if n.get("type") == "video"]
         if incremental:
             fresh, reached_anchor = _catchup_cards(list(collected.values()), anchors)
-            fresh = [n for n in fresh if n.get("type") in {"normal", "image"} and _card_id(n) not in seen_ids]
+            fresh = [n for n in fresh if n.get("type") in {"normal", "image", "video"} and _card_id(n) not in seen_ids]
             # Persist discovery before any detail read; seen IDs acknowledge only
             # articles already recorded by the scheduler, not attempted reads.
             queued = [c for c in (pending_cards or []) if _card_id(c) not in seen_ids]
@@ -250,9 +205,9 @@ def load_profile(uid: str, cookie: str, profile_url: str = "", *, seen_ids=None,
             client.drain(3)
             # An access challenge aborts the whole fetch, never becomes "no update".
             check_access(client)
-            detail = edge._evaluate(client, DETAIL_EXPRESSION)
+            detail = edge.evaluate(client, DETAIL_EXPRESSION)
             if isinstance(detail, dict) and str(detail.get("noteId") or detail.get("id")) == note_id:
-                card = {**card, **detail}
+                card = {**card, **detail, "pinned": card.get("pinned", False)}
                 card.pop("fetch_warning", None)
             else:
                 card["fetch_warning"] = "笔记详情未能读取，目前仅有主页封面和标题"
@@ -271,7 +226,7 @@ def load_note(note_id: str, href: str, cookie: str) -> dict:
         client.call("Page.navigate", {"url": note_link(note_id, href)})
         client.drain(4)
         check_access(client)
-        detail = edge._evaluate(client, DETAIL_EXPRESSION)
+        detail = edge.evaluate(client, DETAIL_EXPRESSION)
         if not isinstance(detail, dict) or str(detail.get("noteId") or detail.get("id")) != note_id:
             raise RuntimeError("笔记正文未能读取，请检查登录状态或打开原笔记确认是否仍公开")
         detail["href"] = href

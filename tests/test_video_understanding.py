@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import webapp
 from src import update_history
+from src.ai_protocol import AIRequestError, is_transient_error
 from src.fetcher import enrich_article
 from src.platforms.bilibili_subtitle import TranscriptSegment
 from src.processors import deepseek_summarizer, media_knowledge, summary_router, video_analysis_config, video_understanding
@@ -104,6 +105,29 @@ class VideoUnderstandingTests(unittest.TestCase):
         with patch.object(self.client, "_call_api", side_effect=RuntimeError("no image support")):
             with self.assertRaisesRegex(RuntimeError, "所有视频片段分析失败"):
                 self.analyzer().analyze("BVtest", "标题", "text", [], self.segments, {})
+
+    def test_all_segment_failures_keep_the_request_retry_category(self):
+        for category, retryable in (("server", True), ("credits", False)):
+            with self.subTest(category=category):
+                failure = AIRequestError("分析未完成", category=category)
+                with patch.object(self.client, "_call_api", side_effect=failure), self.assertRaises(RuntimeError) as error:
+                    self.analyzer().analyze("BVtest", "标题", "text", [], self.segments, {}, use_cache=False)
+                self.assertIs(error.exception.__cause__, failure)
+                self.assertEqual(is_transient_error(error.exception), retryable)
+
+    def test_partial_reanalysis_keeps_old_cache_and_transient_failure(self):
+        cache = self.root / "summaries" / "BVtest.json"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("previous successful summary", encoding="utf-8")
+        failure = AIRequestError("分析未完成", category="server")
+        with patch.object(self.client, "_call_api", side_effect=[self.response(), failure, failure]) as call:
+            with self.assertRaisesRegex(RuntimeError, "保留上次") as error:
+                self.client.summarize("BVtest", "标题", "语音", self.frames,
+                    {"preserve_on_partial_failure": True}, segments=self.segments, use_cache=False)
+        self.assertEqual(call.call_count, 3)
+        self.assertIs(error.exception.__cause__, failure)
+        self.assertTrue(is_transient_error(error.exception))
+        self.assertEqual(cache.read_text(encoding="utf-8"), "previous successful summary")
 
     def test_transient_gateway_failure_retries_once_without_removing_frames(self):
         with patch.object(self.client, "_call_api", side_effect=[RuntimeError("AI API错误 HTTP 504"), self.response()]) as call:

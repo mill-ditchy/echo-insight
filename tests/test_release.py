@@ -84,6 +84,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertTrue(any(name.endswith("VERSION") for name in package.namelist()))
             self.assertFalse(any("secrets" in name for name in package.namelist()))
         manifest = json.loads(archive.with_suffix(".json").read_text())
+        self.assertFalse(manifest["includes_companion"])
         self.assertEqual(manifest["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
         self.assertEqual(manifest["commit"], self.git("rev-parse", "HEAD").decode().strip())
         self.assertIn(manifest["sha256"], archive.with_suffix(".sha256").read_text())
@@ -104,6 +105,54 @@ class ReleaseTests(unittest.TestCase):
         for name in ("data/history.json", "output/evidence.json", "models/model.onnx", "src/__pycache__/x.pyc", "../README.md", "config/provider.json", "scripts/.env.production", "src/Secrets/account.json"):
             with self.subTest(path=name):
                 self.assertFalse(release.allowed_path(name))
+
+    def test_current_companion_sources_are_publishable(self):
+        project = Path(__file__).resolve().parents[1]
+        names = ["mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt"]
+        names += [path.relative_to(project).as_posix() for path in (project / "android").rglob("*") if path.is_file()]
+        for name in names:
+            with self.subTest(path=name):
+                self.assertTrue(release.allowed_path(name, include_companion=True))
+                self.write(name, "public source\n")
+        self.git("add", ".")
+        published = release.check(self.root, include_companion=True)
+        self.assertTrue(set(names) <= published.keys())
+
+    def test_companion_private_data_and_generated_files_are_rejected(self):
+        names = (
+            "config/mobile/access.json", "config/mobile/pairing.json",
+            "config/android-signing.p12", "config/android-signing.json",
+            "dist/companion.apk", "android/build/companion.apk",
+            "android/assets/pairing.json", "android/assets/server-key.pem",
+            "android/src/com/example/Signing.keystore", "android/res/raw/signing.p12",
+            "android/src/__pycache__/cache.java", "android/assets/.env.production",
+            "src/signing.jks", "web/static/companion.apk",
+        )
+        for name in names:
+            with self.subTest(path=name):
+                self.assertFalse(release.allowed_path(name))
+                self.assertFalse(release.allowed_path(name, include_companion=True))
+
+    def test_windows_profile_excludes_companion_but_keeps_shared_web_resources(self):
+        for name in (*release.COMPANION_FILES, "android/AndroidManifest.xml", "android/assets/native.js"):
+            with self.subTest(path=name):
+                self.assertFalse(release.allowed_path(name))
+        for name in ("desktop.py", "webapp.py", "web/static/mobile.css", "tests/test_maintenance_boundaries.py", "tests/test_collection_host_frontend.js"):
+            with self.subTest(path=name):
+                self.assertTrue(release.allowed_path(name))
+
+    def test_forced_companion_source_blocks_default_windows_release(self):
+        self.write("android/assets/native.js", "// companion source\n")
+        self.git("add", "--force", "android/assets/native.js")
+        with self.assertRaisesRegex(release.ReleaseError, "unexpected"):
+            release.check(self.root)
+        self.assertIn("android/assets/native.js", release.check(self.root, include_companion=True))
+
+    def test_forced_companion_signing_file_fails_release_scan(self):
+        self.write("android/res/raw/signing.p12", "private signing material")
+        self.git("add", "--force", "android/res/raw/signing.p12")
+        with self.assertRaisesRegex(release.ReleaseError, "private"):
+            release.check(self.root)
 
 
 if __name__ == "__main__":

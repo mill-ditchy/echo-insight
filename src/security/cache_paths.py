@@ -10,6 +10,13 @@ def safe_cache_id(key: str) -> str:
     return key
 
 
+def summary_cache_id(platform: str, content_id: str) -> str:
+    """Use the same identifier when generating and recovering platform summaries."""
+    if platform == "zhihu":
+        return safe_cache_id(f"zhihu_{content_id.replace(':', '_')}")
+    return safe_cache_id(content_id)
+
+
 def cache_file(directory: Path, key: str) -> Path:
     safe_cache_id(key)
     path = directory / f"{key}.json"

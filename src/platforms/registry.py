@@ -54,7 +54,7 @@ PLATFORMS = {
         "category": "小红书",
         "uid_prompt": "输入小红书用户 ID（在个人主页网址 https://www.xiaohongshu.com/user/profile/ 后面那串）：",
         "uid_example": "5e5b5a5a0000000001000b5b",
-        "note": "读取关注博主的公开图文笔记，建议先在账号管理登录",
+        "note": "读取关注博主的公开视频与图文，自动识别类型并生成简报",
     },
     "zhihu": {
         "fetcher": ZhihuFetcher(),

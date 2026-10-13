@@ -11,9 +11,11 @@ from fastapi.testclient import TestClient
 import webapp
 import scheduler
 from src import state_manager, update_history
+from src.ai_protocol import AIRequestError, is_transient_error
 from src.platforms import xiaohongshu_browser as browser, xiaohongshu_status as status
 from src.platforms.xiaohongshu import XiaohongshuFetcher, parse_note
-from src.processors import xiaohongshu_summary as summary, xiaohongshu_images as images
+from src.platforms.base import FetchResult
+from src.processors import note_summary as summary, xiaohongshu_images as images
 from src.processors.deepseek_summarizer import DeepSeekSummarizer, SummaryResult
 from src.processors import deepseek_summarizer as api_module
 
@@ -112,7 +114,7 @@ class IncrementalTests(IsolatedTests):
                 return None
             return {"url": client.current_url, "text": ""}
         p1 = patch.object(browser, "browser", return_value=nullcontext(client))
-        p2 = patch.object(browser.edge, "_evaluate", side_effect=evaluate)
+        p2 = patch.object(browser.edge, "evaluate", side_effect=evaluate)
         p1.start(); p2.start()
         self.addCleanup(p1.stop); self.addCleanup(p2.stop)
         return client
@@ -178,7 +180,7 @@ class IncrementalTests(IsolatedTests):
         state_manager.mark_seen([{"platform": "xiaohongshu", "source_uid": UID, "article_id": "xhs_" + raw(100)["id"]}])
         fetcher = XiaohongshuFetcher()
         notes = [parse_note(raw(n), UID) for n in range(108, 100, -1)]
-        with patch("src.fetcher.list_sources", return_value=[{"name": "博主", "platform": "xiaohongshu", "uid": UID}]), patch("src.fetcher.get_fetcher", return_value=fetcher), patch.object(fetcher, "fetch_incremental", return_value=notes):
+        with patch("src.fetcher.list_sources", return_value=[{"name": "博主", "platform": "xiaohongshu", "uid": UID}]), patch("src.fetcher.get_fetcher", return_value=fetcher), patch.object(fetcher, "scan", return_value=FetchResult(notes, True, "anchor_reached")):
             from src.fetcher import fetch_metadata
             result, errors = fetch_metadata()
         self.assertEqual(len(result), 8)
@@ -218,7 +220,9 @@ class CompleteReadingTests(IsolatedTests):
         self.photo = self.root / "image.jpg"
         Image.new("RGB", (40, 40)).save(self.photo)
         self.api = Mock(return_value={"choices": [{"message": {"content": "事实来自原文。[正文] 图片有示意。[图片1]"}}]})
-        for target, replacement in (("is_configured", True), ("_load_cache", None), ("_load_provider_config", {"api_url": "https://example.com/v1", "model": "text", "vision_model": "vision", "vision_enabled": True})):
+        provider = {"api_url": "https://example.com/v1/chat/completions", "model": "text", "vision_model": "vision", "vision_enabled": True, "credential_id": ""}
+        self.enterContext(patch("src.analysis_config.effective_provider_config", return_value=provider))
+        for target, replacement in (("is_configured", True), ("_load_cache", None)):
             p = patch.object(DeepSeekSummarizer, target, return_value=replacement); p.start(); self.addCleanup(p.stop)
         for p in (patch.object(DeepSeekSummarizer, "_call_api", self.api), patch.object(DeepSeekSummarizer, "_save_cache"), patch.object(summary, "download_image", return_value=self.photo), patch.object(summary, "read_frames", return_value=([{"timestamp": 1, "text": "可核对文字"}], ""))):
             p.start(); self.addCleanup(p.stop)
@@ -275,6 +279,21 @@ class CompleteReadingTests(IsolatedTests):
             summary.enrich_note(item)
         self.assertEqual(self.api.call_count, 1)
         self.assertNotIn('ai_summary', item)
+
+    def test_failed_batches_keep_the_request_retry_category(self):
+        for category, retryable in (("server", True), ("credits", False)):
+            for old_summary in ("", "旧简报"):
+                with self.subTest(category=category, old_summary=old_summary):
+                    failure = AIRequestError("分析未完成", category=category)
+                    self.api.side_effect = failure
+                    item = article(1)
+                    if old_summary:
+                        item["ai_summary"] = old_summary
+                    with self.assertRaises(RuntimeError) as error:
+                        summary.enrich_note(item)
+                    self.assertIs(error.exception.__cause__, failure)
+                    self.assertEqual(is_transient_error(error.exception), retryable)
+                    self.assertEqual(item.get("ai_summary", ""), old_summary)
 
     def test_unread_image_citation_is_not_linked_as_evidence(self):
         self.api.return_value = {"choices": [{"message": {"content": "断言[图片18]"}}]}

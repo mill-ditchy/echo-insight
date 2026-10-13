@@ -1,16 +1,56 @@
-"""小红书公开图文笔记；浏览器负责正常页面加载，不调用签名接口。"""
+"""小红书公开视频与图文；浏览器负责正常页面加载，不调用签名接口。"""
 
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl
 
-from .base import PlatformFetcher
+from .base import PlatformFetcher, FetchResult, FetchContext
 from ..security.network import validate_https_url
 from ..security.secret_store import load_secret
 
 
 ID_PATTERN = re.compile(r"[0-9a-fA-F]{24}")
 IMAGE_DOMAINS = ("xhscdn.com", "xiaohongshu.com")
+VIDEO_DOMAINS = ("xhscdn.com",)
+
+
+def video_url(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    if value.startswith("//"):
+        value = "https:" + value
+    if value.startswith("http://"):
+        value = "https:" + value[5:]
+    try:
+        validate_https_url(value, VIDEO_DOMAINS)
+        return value
+    except ValueError:
+        return ""
+
+
+def video_metadata(raw: dict) -> tuple[list[str], float]:
+    video = raw.get("video") or {}
+    media = video.get("media") or {}
+    streams = [stream for group in (media.get("stream") or {}).values()
+               if isinstance(group, list) for stream in group if isinstance(stream, dict)]
+    # Prefer MP4/AVC when available; the existing decoder also supports HEVC.
+    streams.sort(key=lambda stream: (str(stream.get("format", "")).lower() != "mp4",
+                                    str(stream.get("videoCodec", "")).lower() not in {"h264", "avc"},
+                                    stream.get("size") or 0))
+    candidates = []
+    for stream in streams:
+        candidates.append(stream.get("masterUrl"))
+        candidates.extend(stream.get("backupUrls") or [])
+    candidates.extend(raw.get("media_urls") or [])
+    urls = list(dict.fromkeys(url for value in candidates if (url := video_url(value))))
+    duration = (video.get("capa") or {}).get("duration") or (media.get("video") or {}).get("duration") or 0
+    try:
+        duration = max(0, float(duration))
+        if not duration and streams:
+            duration = max(0, float(streams[0].get("duration") or 0) / 1000)
+    except (TypeError, ValueError, OverflowError):
+        duration = 0
+    return urls[:6], duration
 
 
 def normalize_uid(value: str) -> str:
@@ -60,11 +100,12 @@ def note_link(note_id: str, href: str = "", token: str = "") -> str:
 
 
 def parse_note(raw: dict, uid: str, profile_name: str = "") -> dict | None:
-    """只接受当前博主的图文，保留图片顺序以及页面证据的完整程度。"""
+    """接受当前博主的视频与图文，按作品实际类型保留媒体证据。"""
     note_id = str(raw.get("noteId") or raw.get("note_id") or raw.get("id") or "").lower()
     if not ID_PATTERN.fullmatch(note_id):
         return None
-    if str(raw.get("type") or "").lower() not in {"normal", "image", "图文"}:
+    kind = str(raw.get("type") or "").lower()
+    if kind not in {"normal", "image", "图文", "video"}:
         return None
     user = raw.get("user") or {}
     author_id = str(user.get("userId") or user.get("user_id") or "").lower()
@@ -95,6 +136,11 @@ def parse_note(raw: dict, uid: str, profile_name: str = "") -> dict | None:
         published = datetime.fromtimestamp(timestamp, timezone.utc).astimezone().isoformat(timespec="seconds") if timestamp > 0 else ""
     except (TypeError, ValueError, OverflowError, OSError):
         timestamp, published = 0, ""
+    is_video = kind == "video"
+    media_urls, duration = video_metadata(raw) if is_video else ([], 0)
+    if is_video:
+        images = []  # A video cover is not an image album.
+        detail_available = detail_available and bool(media_urls)
     return {
         "article_id": "xhs_" + note_id, "note_id": note_id,
         "title": title[:300], "summary": body,
@@ -102,28 +148,40 @@ def parse_note(raw: dict, uid: str, profile_name: str = "") -> dict | None:
         "published": published, "published_ts": timestamp,
         "author_name": str(user.get("nickname") or profile_name).strip(),
         "author_avatar": image_url(str(user.get("avatar") or "")),
-        "content_type": "image_note", "content_type_label": "图文",
+        "content_type": "video" if is_video else "image_note", "content_type_label": "视频" if is_video else "图文",
         "images": images[:60], "image_count": len(images),
         "cover_url": cover_url or (images[0] if images else ""),
+        "media_urls": media_urls, "duration": duration, "pinned": bool(raw.get("pinned")),
         "tags": [str(t.get("name") or "")[:100] for t in raw.get("tagList", []) if isinstance(t, dict)][:30],
         "detail_status": "available" if detail_available else "preview_only",
-        "fetch_warning": str(raw.get("fetch_warning") or ("只读取到主页预览，笔记正文和完整图片尚未取得" if not detail_available else "")),
+        "fetch_warning": str(raw.get("fetch_warning") or (("视频媒体地址尚未取得，将在分析时重新读取" if is_video else "只读取到主页预览，笔记正文和完整图片尚未取得") if not detail_available else "")),
     }
 
 
 class XiaohongshuFetcher(PlatformFetcher):
     def fetch_incremental(self, uid: str, seen_ids: list[str]) -> list[dict]:
+        return self.scan(uid, FetchContext(seen_ids=list(seen_ids))).articles
+
+    def scan(self, uid, context):
         from .xiaohongshu_status import DATA_PATH, get_source_status
         from ..storage_lock import interprocess_lock
-        # Separate operation mutex: status JSON writes acquire their own lock.
         with interprocess_lock(DATA_PATH.with_name(f"xhs-fetch-{normalize_uid(uid)}.lock"), timeout=2):
             saved = get_source_status(uid)
             pending = saved.get("pending_cards", [])
-            # Video-only accounts still need a discovery position. These IDs
-            # are anchors, never video records or evidence of video analysis.
-            if not seen_ids:
-                seen_ids = saved.get("video_anchor_ids", [])
-            return self.read_profile(uid, seen_ids=seen_ids, pending_cards=pending, scan_anchor_ids=saved.get("scan_anchor_ids"))["articles"]
+            bootstrap = context.initial or (not context.seen_ids and not pending)
+            if bootstrap:
+                profile = self.read_profile(uid)
+                for article in profile["articles"]:
+                    article["is_baseline"] = True
+            else:
+                profile = self.read_profile(uid, seen_ids=context.seen_ids, pending_cards=pending,
+                                            scan_anchor_ids=saved.get("scan_anchor_ids"))
+            warning = profile.get("scan_warning", "")
+            if profile.get("pending_count"):
+                warning = "；".join(filter(None, (warning, f"还有{profile['pending_count']}条已发现作品待读取，后续检查继续")))
+            return FetchResult(profile["articles"], not bool(warning),
+                               "baseline" if bootstrap else "range_unconfirmed" if warning else "visible_window",
+                               warning=warning)
 
     def fetch_note(self, uid: str, note_id: str, href: str) -> dict:
         from .xiaohongshu_browser import load_note
@@ -135,7 +193,7 @@ class XiaohongshuFetcher(PlatformFetcher):
             raise
         article = parse_note(raw, normalize_uid(uid))
         if article is None:
-            raise RuntimeError("这条笔记不是该博主的公开图文")
+            raise RuntimeError("这条作品不是该博主的公开视频或图文")
         record_session_access()
         return article
 
@@ -164,7 +222,7 @@ class XiaohongshuFetcher(PlatformFetcher):
         unique = {item["article_id"]: item for item in parsed}
         if not unique and not result.get("empty_confirmed") and not result.get("video_only") and not (seen_ids is not None and result.get("profile_name")):
             from .xiaohongshu_browser import XiaohongshuAccessError
-            exc = XiaohongshuAccessError("unavailable", "没有读取到博主的公开图文，请检查登录状态、主页链接或稍后重试")
+            exc = XiaohongshuAccessError("unavailable", "没有读取到博主的公开作品，请检查登录状态、主页链接或稍后重试")
             record_result(uid, error=exc)
             raise exc
         articles = list(unique.values()) if seen_ids is not None else list(unique.values())[:3]
@@ -173,4 +231,5 @@ class XiaohongshuFetcher(PlatformFetcher):
             save_source_status(uid, video_anchor_ids=result["video_anchor_ids"])
         return {"articles": articles, "profile_name": result.get("profile_name", ""),
                 "profile_avatar": result.get("profile_avatar", ""), "video_only": result.get("video_only", False),
-                "empty_confirmed": result.get("empty_confirmed", False), "scan_warning": result.get("scan_warning", "")}
+                "empty_confirmed": result.get("empty_confirmed", False), "scan_warning": result.get("scan_warning", ""),
+                "pending_count": result.get("pending_count", 0)}

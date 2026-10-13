@@ -1,12 +1,12 @@
 """Persistent collection status without credentials or raw page data."""
 
 import json
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from ..storage_lock import interprocess_lock
+from ..storage import atomic_json
 
 DATA_PATH = Path(__file__).resolve().parents[2] / "data" / "douyin_status.json"
 _lock = threading.RLock()
@@ -29,13 +29,7 @@ def _update(section, key, fields):
         data = _load()
         target = data[section] if key is None else data[section].setdefault(key, {})
         target.update(fields)
-        DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = DATA_PATH.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(DATA_PATH)
-        finally:
-            temporary.unlink(missing_ok=True)
+        atomic_json(DATA_PATH, data)
         return dict(target)
 
 

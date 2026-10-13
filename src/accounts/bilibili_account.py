@@ -34,6 +34,7 @@ AUTH_COOKIE_NAMES = {
 
 _qr_sessions: dict[str, dict] = {}
 _qr_lock = Lock()
+_qr_generation = 0
 _status_cache: dict = {"checked_at": 0.0, "value": None}
 
 
@@ -89,10 +90,14 @@ def clear_status_cache() -> None:
 
 def logout_bilibili() -> dict:
     """删除B站本机登录凭证并清理尚未完成的扫码会话。"""
-    clear_bilibili_credentials()
+    global _qr_generation
     with _qr_lock:
-        _qr_sessions.clear()
-    clear_status_cache()
+        _qr_generation += 1
+        for key in list(_qr_sessions):
+            _remove_qr_session(key)
+        # Revocation and credential publication use the same commit boundary.
+        clear_bilibili_credentials()
+        clear_status_cache()
     return get_account_status(force=True)
 
 
@@ -176,42 +181,61 @@ def get_account_status(force: bool = False) -> dict:
     return result
 
 
+def _remove_qr_session(key: str) -> None:
+    """Caller holds _qr_lock; an in-flight poll closes its session on exit."""
+    entry = _qr_sessions.pop(key, None)
+    if entry and not entry.get("polling"):
+        entry["session"].close()
+
+
 def _cleanup_qr_sessions() -> None:
     deadline = time.time() - 600
     expired = [key for key, value in _qr_sessions.items() if value["created_at"] < deadline]
     for key in expired:
-        _qr_sessions.pop(key, None)
+        _remove_qr_session(key)
 
 
 def start_qr_login() -> dict:
-    session = requests.Session()
-    response = _get_with_proxy_fallback(
-        session,
-        QR_GENERATE_URL,
-        headers=_headers(),
-        timeout=20,
-    )
-    data = response.json()
-    if data.get("code") != 0:
-        raise RuntimeError(data.get("message") or "B站二维码生成失败")
-    login_data = data.get("data", {})
-    login_url = login_data.get("url", "")
-    qrcode_key = login_data.get("qrcode_key", "")
-    if not login_url or not qrcode_key:
-        raise RuntimeError("B站二维码接口没有返回完整数据")
-
-    image = qrcode.make(login_url)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    image_data = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-
     with _qr_lock:
-        _cleanup_qr_sessions()
-        _qr_sessions[qrcode_key] = {
-            "session": session,
-            "created_at": time.time(),
-        }
-    return {"qrcode_key": qrcode_key, "image": image_data, "expires_in": 180}
+        generation = _qr_generation
+    session = requests.Session()
+    registered = False
+    try:
+        response = _get_with_proxy_fallback(
+            session,
+            QR_GENERATE_URL,
+            headers=_headers(),
+            timeout=20,
+        )
+        data = response.json()
+        if data.get("code") != 0:
+            raise RuntimeError(data.get("message") or "B站二维码生成失败")
+        login_data = data.get("data", {})
+        login_url = login_data.get("url", "")
+        qrcode_key = login_data.get("qrcode_key", "")
+        if not login_url or not qrcode_key:
+            raise RuntimeError("B站二维码接口没有返回完整数据")
+
+        image = qrcode.make(login_url)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        image_data = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        with _qr_lock:
+            if generation != _qr_generation:
+                raise RuntimeError("登录操作已取消，请重新生成二维码")
+            _cleanup_qr_sessions()
+            _remove_qr_session(qrcode_key)
+            _qr_sessions[qrcode_key] = {
+                "session": session,
+                "created_at": time.time(),
+                "poll_lock": Lock(),
+            }
+            registered = True
+        return {"qrcode_key": qrcode_key, "image": image_data, "expires_in": 180}
+    finally:
+        if not registered:
+            session.close()
 
 
 def _save_login(session: requests.Session, response: requests.Response, data: dict) -> None:
@@ -244,40 +268,54 @@ def _save_login(session: requests.Session, response: requests.Response, data: di
 
 
 def poll_qr_login(qrcode_key: str) -> dict:
+    expired = {"status": "expired", "message": "二维码已失效，请重新生成"}
     with _qr_lock:
         entry = _qr_sessions.get(qrcode_key)
-    if not entry:
-        return {"status": "expired", "message": "二维码已失效，请重新生成"}
-
-    session: requests.Session = entry["session"]
-    response = _get_with_proxy_fallback(
-        session,
-        QR_POLL_URL,
-        params={"qrcode_key": qrcode_key},
-        headers=_headers(),
-        timeout=20,
-    )
-    payload = response.json()
-    if payload.get("code") != 0:
-        raise RuntimeError(payload.get("message") or "B站扫码状态读取失败")
-    data = payload.get("data", {})
-    code = data.get("code")
-
-    if code == 0:
-        _save_login(session, response, data)
+        if not entry:
+            return expired
+        poll_lock = entry.setdefault("poll_lock", Lock())
+    # requests.Session is shared by polls for this QR code. Serialize only this
+    # session's network access; the global lock remains free during the request.
+    with poll_lock:
         with _qr_lock:
-            _qr_sessions.pop(qrcode_key, None)
-        return {
-            "status": "success",
-            "message": "B站账号登录成功",
-            "account": get_account_status(force=True),
-        }
-    if code == 86090:
-        return {"status": "confirmed_pending", "message": "已扫码，请在手机上确认登录"}
-    if code == 86101:
-        return {"status": "waiting", "message": "请使用哔哩哔哩手机客户端扫码"}
-    if code == 86038:
-        with _qr_lock:
-            _qr_sessions.pop(qrcode_key, None)
-        return {"status": "expired", "message": "二维码已过期，请重新生成"}
-    return {"status": "waiting", "message": data.get("message") or "等待扫码"}
+            if _qr_sessions.get(qrcode_key) is not entry:
+                return expired
+            entry["polling"] = True
+        try:
+            session: requests.Session = entry["session"]
+            response = _get_with_proxy_fallback(
+                session,
+                QR_POLL_URL,
+                params={"qrcode_key": qrcode_key},
+                headers=_headers(),
+                timeout=20,
+            )
+            payload = response.json()
+            data = payload.get("data", {})
+            code = data.get("code")
+
+            with _qr_lock:
+                if _qr_sessions.get(qrcode_key) is not entry:
+                    return expired
+                if payload.get("code") != 0:
+                    raise RuntimeError(payload.get("message") or "B站扫码状态读取失败")
+                if code == 0:
+                    _save_login(session, response, data)
+                    _remove_qr_session(qrcode_key)
+                elif code == 86038:
+                    _remove_qr_session(qrcode_key)
+
+            if code == 0:
+                return {"status": "success", "message": "B站账号登录成功", "account": get_account_status(force=True)}
+            if code == 86090:
+                return {"status": "confirmed_pending", "message": "已扫码，请在手机上确认登录"}
+            if code == 86101:
+                return {"status": "waiting", "message": "请使用哔哩哔哩手机客户端扫码"}
+            if code == 86038:
+                return {"status": "expired", "message": "二维码已过期，请重新生成"}
+            return {"status": "waiting", "message": data.get("message") or "等待扫码"}
+        finally:
+            with _qr_lock:
+                entry["polling"] = False
+                if _qr_sessions.get(qrcode_key) is not entry:
+                    entry["session"].close()

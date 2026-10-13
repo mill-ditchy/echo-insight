@@ -10,11 +10,11 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_FILE_BYTES = 5 * 1024 * 1024
-PUBLIC_DIRECTORIES = {"src", "tests", "scripts", "web", "docs", "LICENSES", ".github"}
+PUBLIC_DIRECTORIES = {"src", "tests", "scripts", "web", "docs", "LICENSES", ".github", "android"}
 PUBLIC_ROOT_FILES = {
     ".gitattributes", ".gitignore", "VERSION", "LICENSE", "README.md", "CHANGELOG.md",
     "CONTRIBUTING.md", "SECURITY.md", "app.py", "desktop.py", "webapp.py", "scheduler.py",
-    "启动赛博情报局.bat",
+    "启动赛博情报局.bat", "mobile_server.py", "启动手机连接.ps1",
 }
 PLACEHOLDERS = {"data/.gitkeep", "output/.gitkeep", "knowledge/images/.gitkeep"}
 SECRET_PATTERNS = (
@@ -23,6 +23,11 @@ SECRET_PATTERNS = (
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?")
+COMPANION_FILES = {
+    "mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt", "docs/ANDROID.md",
+    "scripts/build_android.py", "scripts/preview_mobile.py", "src/security/mobile_access.py",
+    "tests/test_mobile_access.py",
+}
 
 
 class ReleaseError(RuntimeError):
@@ -36,9 +41,15 @@ def git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
     return result.stdout
 
 
-def allowed_path(name: str) -> bool:
+def companion_path(name: str) -> bool:
+    return name.startswith("android/") or name in COMPANION_FILES
+
+
+def allowed_path(name: str, *, include_companion: bool = False) -> bool:
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts or "\\" in name:
+        return False
+    if not include_companion and companion_path(name):
         return False
     if name in PLACEHOLDERS or name in PUBLIC_ROOT_FILES:
         return True
@@ -46,10 +57,17 @@ def allowed_path(name: str) -> bool:
         return bool(re.fullmatch(r"requirements(?:-[a-z0-9-]+)?\.(?:txt|lock)", name))
     if path.parts[0] == "config":
         return len(path.parts) == 2 and path.name.endswith(".example.json") and not path.name.startswith(".")
+    if path.parts[0] == "android":
+        source_types = {"src": {".java"}, "res": {".xml"}, "assets": {".js", ".css"}, "tests": {".py", ".js"}}
+        if name != "android/AndroidManifest.xml" and not (
+            len(path.parts) >= 3 and path.suffix.lower() in source_types.get(path.parts[1], set())
+        ):
+            return False
     # Reject hidden environment/browser state even if placed within a public directory.
     forbidden = {"__pycache__", ".venv", "node_modules", "secrets", ".git"}
     return path.parts[0] in PUBLIC_DIRECTORIES and not any(part.casefold() in forbidden or part.casefold().startswith(".env") for part in path.parts) and path.suffix.lower() not in {
         ".pyc", ".pyo", ".onnx", ".dll", ".exe", ".db", ".sqlite", ".log", ".tmp", ".download", ".zip", ".pfx", ".key",
+        ".apk", ".aab", ".dex", ".class", ".p12", ".jks", ".keystore", ".pem",
     }
 
 
@@ -118,12 +136,12 @@ def inspect_example(name: str, content: bytes) -> None:
     inspect(data)
 
 
-def check(root: Path = ROOT, ref: str | None = None) -> dict[str, bytes]:
+def check(root: Path = ROOT, ref: str | None = None, *, include_companion: bool = False) -> dict[str, bytes]:
     files = git_files(root, ref)
     if not files:
         raise ReleaseError("No source files found. Stage the project first with git add .")
     for name, mode, _ in files:
-        if not allowed_path(name):
+        if not allowed_path(name, include_companion=include_companion):
             raise ReleaseError(f"{name}: private, generated or unexpected file must not be published.")
         if mode not in {"100644", "100755"}:
             raise ReleaseError(f"{name}: symlinks and submodules are not accepted in the source release.")
@@ -146,8 +164,8 @@ def release_version(blobs: dict[str, bytes]) -> str:
     return version
 
 
-def build(root: Path = ROOT, output_dir: Path | None = None, ref: str = "HEAD") -> Path:
-    blobs = check(root, ref)
+def build(root: Path = ROOT, output_dir: Path | None = None, ref: str = "HEAD", *, include_companion: bool = False) -> Path:
+    blobs = check(root, ref, include_companion=include_companion)
     version = release_version(blobs)
     commit = git(root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}").decode("ascii").strip()
     if git(root, "status", "--porcelain", "--untracked-files=normal"):
@@ -168,6 +186,7 @@ def build(root: Path = ROOT, output_dir: Path | None = None, ref: str = "HEAD") 
         "version": version, "commit": commit, "archive": destination.name, "sha256": digest,
         "source_files": len(blobs), "runtime": "Windows x64 / Python 3.11", "license": "MIT",
         "includes_credentials": False, "includes_models": False,
+        "includes_companion": include_companion,
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return destination
 
@@ -177,16 +196,18 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     checker = subparsers.add_parser("check", help="Check staged files, or a committed reference")
     checker.add_argument("--ref", default=None)
+    checker.add_argument("--include-companion", action="store_true", help="Explicitly include the later companion release")
     builder = subparsers.add_parser("build", help="Build a clean, committed source release")
     builder.add_argument("--ref", default="HEAD")
     builder.add_argument("--output", type=Path, default=None)
+    builder.add_argument("--include-companion", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "check":
-            blobs = check(ref=args.ref)
+            blobs = check(ref=args.ref, include_companion=args.include_companion)
             print(f"Release content check passed: {len(blobs)} source files. No private paths or recognized credentials.")
         else:
-            print(build(output_dir=args.output, ref=args.ref))
+            print(build(output_dir=args.output, ref=args.ref, include_companion=args.include_companion))
         return 0
     except (ReleaseError, FileNotFoundError) as exc:
         print(f"Release stopped: {exc}", file=sys.stderr)

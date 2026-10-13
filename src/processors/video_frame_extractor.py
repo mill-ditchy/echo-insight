@@ -13,7 +13,8 @@ from types import SimpleNamespace
 
 from ..platforms.bilibili_subtitle import BilibiliSubtitleFetcher
 from ..platforms.bilibili_video import BilibiliVideoDownloader
-from .video_analysis_config import load_settings
+from ..storage import atomic_json
+from .video_analysis_config import load_settings, validate_settings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -199,9 +200,9 @@ class _Candidate:
 class VideoFrameExtractor:
     """先密集扫描视觉证据，再按内容类型选择覆盖时间线的代表画面。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, analysis_settings: dict | None = None) -> None:
         self.config = _load_config()
-        self.analysis_settings = load_settings()
+        self.analysis_settings = load_settings() if analysis_settings is None else validate_settings(analysis_settings)
 
     def _config_hash(self) -> str:
         return hashlib.sha256(json.dumps({"frames": self.config, "analysis": self.analysis_settings}, sort_keys=True).encode()).hexdigest()
@@ -720,29 +721,20 @@ class VideoFrameExtractor:
                 selection_strategy=strategy,
                 segments=segments,
             )
-            temp_path = result.manifest_path.with_suffix(".tmp")
-            temp_path.write_text(
-                json.dumps(
-                    {
-                        "bvid": result.bvid,
-                        "duration": result.duration,
-                        "extractor_version": result.extractor_version,
-                        "config_hash": self._config_hash(),
-                        "max_frames": self._max_frames(),
-                        "scan_interval": result.scan_interval,
-                        "scanned_frame_count": result.scanned_frame_count,
-                        "selected_frame_count": len(result.frames),
-                        "selection_strategy": result.selection_strategy,
-                        "frames": [asdict(frame) for frame in result.frames],
-                        "segments": [asdict(segment) for segment in result.segments],
-                        "created_at": result.created_at,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            temp_path.replace(result.manifest_path)
+            atomic_json(result.manifest_path, {
+                "bvid": result.bvid,
+                "duration": result.duration,
+                "extractor_version": result.extractor_version,
+                "config_hash": self._config_hash(),
+                "max_frames": self._max_frames(),
+                "scan_interval": result.scan_interval,
+                "scanned_frame_count": result.scanned_frame_count,
+                "selected_frame_count": len(result.frames),
+                "selection_strategy": result.selection_strategy,
+                "frames": [asdict(frame) for frame in result.frames],
+                "segments": [asdict(segment) for segment in result.segments],
+                "created_at": result.created_at,
+            })
             completed = True
             return result
         except Exception as exc:

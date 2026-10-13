@@ -12,6 +12,7 @@ from .security.secret_store import (
     SecretStoreError, load_secret, opencode_api_key_status, save_secret,
 )
 from .storage_lock import interprocess_lock
+from .storage import atomic_json
 
 
 PROVIDER_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "ai_provider.json"
@@ -153,10 +154,7 @@ def save_provider_settings(api_url: str, model: str, api_key: str = "", *, visio
             "credential_id": credential_id,
         }
         try:
-            PROVIDER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = PROVIDER_CONFIG_PATH.with_name(f"{PROVIDER_CONFIG_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            temp_path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp_path.replace(PROVIDER_CONFIG_PATH)
+            atomic_json(PROVIDER_CONFIG_PATH, saved)
         except OSError:
             if new_secret_path:
                 new_secret_path.unlink(missing_ok=True)

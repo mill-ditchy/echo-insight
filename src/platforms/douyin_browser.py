@@ -4,8 +4,8 @@ import json
 import time
 from urllib.parse import urlsplit
 
-from . import zhihu_browser as edge
-from .xiaohongshu_browser import browser
+from . import browser_runtime as edge
+from .browser_runtime import browser_context as browser
 from .douyin import ID_PATTERN, normalize_uid
 
 MAX_SCROLLS = 5
@@ -54,7 +54,7 @@ class DouyinAccessError(RuntimeError):
 
 
 def check_access(client):
-    page = edge._evaluate(client, "({url:location.href,title:document.title,text:document.body?.innerText?.slice(0,5000)||''})") or {}
+    page = edge.evaluate(client, "({url:location.href,title:document.title,text:document.body?.innerText?.slice(0,5000)||''})") or {}
     if "captcha" in page.get("url", "") or any(s in page.get("text", "") for s in ("请完成下方验证", "请完成安全验证", "拖动滑块", "访问过于频繁")):
         raise DouyinAccessError("verification_required", "抖音要求安全验证或已限流，请在官方窗口处理后再试")
     return page
@@ -123,7 +123,7 @@ def load_profile(uid, cookie="", *, seen_ids=None):
                 if len(collected) >= MAX_POSTS or time.monotonic() - started >= MAX_SECONDS:
                     break
                 before = len(collected)
-                edge._evaluate(client, "(() => { for (const e of document.querySelectorAll('main, [data-e2e=scroll-list], #douyin-right-container')) e.scrollTo(0,e.scrollHeight); window.scrollTo(0,document.body.scrollHeight); })()")
+                edge.evaluate(client, "(() => { for (const e of document.querySelectorAll('main, [data-e2e=scroll-list], #douyin-right-container')) e.scrollTo(0,e.scrollHeight); window.scrollTo(0,document.body.scrollHeight); })()")
                 client.drain(3)
                 check_access(client)
                 current_name, current_end = _read(client, handled, collected)
@@ -155,7 +155,7 @@ def load_post(ident, cookie="", *, is_note=False):
                 post = data.get("aweme_detail") or {}
                 if str(post.get("aweme_id")) == str(ident):
                     return post
-            post = edge._evaluate(client, DETAIL_EXPRESSION)
+            post = edge.evaluate(client, DETAIL_EXPRESSION)
             if isinstance(post, dict) and str(post.get("aweme_id")) == str(ident):
                 return post
         raise DouyinAccessError("unavailable", "作品详情未能读取，请登录后重试，或确认作品仍公开")

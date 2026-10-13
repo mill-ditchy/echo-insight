@@ -12,8 +12,9 @@ from src import source_manager, update_history, state_manager
 from src.fetcher import needs_ai_summary, enrich_article
 from src.platforms.douyin import normalize_uid, parse_post, media_url, post_title, DouyinFetcher
 from src.platforms import douyin_browser, douyin_status, douyin_media
+from src.security import media_download
 from src.accounts import douyin_account
-from src.processors import douyin_summary, xiaohongshu_summary
+from src.processors import media_summary, douyin_summary, note_summary as xiaohongshu_summary
 from src.processors.deepseek_summarizer import DeepSeekSummarizer
 
 UID = 'MS4wLjABAAAAaCcBHb3Rhc4zxF8YkBOfHfLh6k-IWEK2l3Ne9xOXPnQ'
@@ -99,7 +100,7 @@ class DouyinTests(unittest.TestCase):
         self.assertEqual(len(fetcher.fetch_incremental(UID,[a['article_id'] for a in baseline])),1)
 
     def test_challenge_stops_before_reading_data(self):
-        with patch.object(douyin_browser.edge,'_evaluate',return_value={'url':'https://www.douyin.com/','text':'请完成安全验证'}):
+        with patch.object(douyin_browser.edge,'evaluate',return_value={'url':'https://www.douyin.com/','text':'请完成安全验证'}):
             with self.assertRaises(douyin_browser.DouyinAccessError): douyin_browser.check_access(Mock())
 
     def test_response_listener_only_accepts_official_post_paths(self):
@@ -187,7 +188,7 @@ class DouyinTests(unittest.TestCase):
         model._save_cache=Mock();model._call_api=Mock()
         frame=SimpleNamespace(path='unused',timestamp=1)
         segment=SimpleNamespace(start=0,end=2,frames=[frame],clip_path='')
-        analyzer=Mock();analyzer.fingerprint.return_value='fingerprint';analyzer.analyze.return_value={'failures':[{'start':0,'end':2}]}
+        analyzer=Mock();analyzer.fingerprint.return_value='fingerprint';analyzer.analyze.side_effect=RuntimeError('本次部分视频片段分析失败，已保留上次成功简报；可稍后重试')
         with patch.object(module,'VideoUnderstanding',return_value=analyzer),patch.object(module,'load_settings',return_value={'enabled':True}):
             with self.assertRaisesRegex(RuntimeError,'保留上次'):
                 model.summarize('dy_'+IDENT,'视频','语音',frames=[frame],segments=[segment],summary_plan={'preserve_on_partial_failure':True},use_cache=False)
@@ -205,7 +206,7 @@ class DouyinTests(unittest.TestCase):
             result.completeness=completeness
             video=self.root/'video.mp4';video.write_bytes(b'placeholder')
             item={**article(),'content_type':'video','media_urls':[VIDEO]}
-            with patch.object(douyin_summary,'DeepSeekSummarizer',return_value=model),patch.object(douyin_summary,'download_video',return_value=video),patch('av.open',return_value=media),patch.object(douyin_summary,'SummaryRouter') as router,patch.object(douyin_summary,'VideoFrameExtractor') as extractor:
+            with patch.object(media_summary,'DeepSeekSummarizer',return_value=model),patch.object(douyin_summary,'download_video',return_value=video),patch('av.open',return_value=media),patch.object(media_summary,'SummaryRouter') as router,patch.object(media_summary,'VideoFrameExtractor') as extractor:
                 router.return_value.route.return_value={}
                 extractor.return_value.extract.return_value=SimpleNamespace(frames=[],segments=[])
                 douyin_summary.enrich_post(item)
@@ -226,10 +227,26 @@ class DouyinTests(unittest.TestCase):
         response=Mock();response.headers={};response.geturl.return_value=VIDEO;response.read.side_effect=[b'video',b''];response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
         media=Mock();media.streams.video=[Mock()];media.__enter__=Mock(return_value=media);media.__exit__=Mock(return_value=False)
         opener=Mock();opener.open.return_value=response
-        with patch.object(douyin_media,'CACHE_DIR',self.root/'media'),patch.object(douyin_media,'build_opener',return_value=opener),patch('av.open',return_value=media):
+        with patch.object(douyin_media,'CACHE_DIR',self.root/'media'),patch.object(media_download,'build_opener',return_value=opener),patch('av.open',return_value=media):
             result=douyin_media.download_video({'article_id':'dy_'+IDENT,'media_urls':[VIDEO]})
             self.assertEqual(result.read_bytes(),b'video')
             self.assertNotIn('Cookie',dict(opener.open.call_args.args[0].header_items()))
+
+    def test_truncated_video_is_never_published_to_cache(self):
+        response = Mock()
+        response.headers = {"Content-Length": "100"}
+        response.geturl.return_value = VIDEO
+        response.read.side_effect = [b"partial", b""]
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock()
+        opener.open.return_value = response
+        directory = self.root / "truncated-media"
+        with patch.object(douyin_media, "CACHE_DIR", directory), patch.object(media_download, "build_opener", return_value=opener), patch("av.open") as decode:
+            with self.assertRaises(RuntimeError):
+                douyin_media.download_video({"article_id": "dy_" + IDENT, "media_urls": [VIDEO]})
+        decode.assert_not_called()
+        self.assertEqual(list(directory.iterdir()), [])
 
     def test_frame_reader_uses_actual_stream_when_audio_is_first(self):
         import av

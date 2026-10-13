@@ -34,7 +34,7 @@ class DashboardSnapshotTests(unittest.TestCase):
                 response = client.get(endpoint, headers={"X-Cyber-Request": "1"})
                 self.assertEqual(response.status_code, 200, response.text)
                 data = response.json()
-                history.assert_called_once_with(limit=webapp.MAX_ITEMS)
+                history.assert_called_once_with(limit=None)
                 self.assertEqual([s["unread_count"] for s in data["sources"]], [2, 0, 0])
                 self.assertEqual([s["new_video_count"] for s in data["sources"]], [2, 1, 0])
                 self.assertIsNone(data["sources"][2]["latest_video"])
@@ -42,14 +42,14 @@ class DashboardSnapshotTests(unittest.TestCase):
                     self.assertEqual(data["unread_count"], 1)
                     self.assertEqual([item["article_id"] for item in data["updates"]], ["BV1"])
 
-    def test_per_source_limit_keeps_newest_200_in_history_order(self):
+    def test_per_source_counts_include_history_beyond_display_page(self):
         history = [
             {"platform": "bilibili", "source_uid": "100", "article_id": str(i), "read": i % 2 == 0}
             for i in range(205)
         ]
         payload = webapp._source_payloads(self.sources, history)[0]
-        self.assertEqual(payload["new_video_count"], 200)
-        self.assertEqual(payload["unread_count"], 100)
+        self.assertEqual(payload["new_video_count"], 205)
+        self.assertEqual(payload["unread_count"], 102)
         self.assertEqual(payload["latest_video"]["article_id"], "0")
 
     def test_dashboard_when_all_read_keeps_only_latest_batch(self):

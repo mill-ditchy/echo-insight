@@ -7,9 +7,10 @@
 import html
 import json
 import re
+import time
 from datetime import datetime
 from html.parser import HTMLParser
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import requests
 
@@ -18,7 +19,7 @@ from ..security.secret_store import (
     get_zhihu_cookie,
     normalize_zhihu_cookie,
 )
-from .base import PlatformFetcher
+from .base import PlatformFetcher, FetchResult
 from .zhihu_browser import load_rendered_profile
 
 
@@ -623,6 +624,73 @@ def parse_activities(page_html: str, limit: int = 20) -> tuple[str, list[dict]]:
 class ZhihuFetcher(PlatformFetcher):
     """抓取知乎个人号或机构号公开动态中的原创内容。"""
 
+    def scan(self, uid, context):
+        if context.initial:
+            return super().scan(uid, context)
+        from .incremental import follow_window
+        anchors = context.anchor_ids or context.seen_ids
+        result = self.fetch_incremental(uid, anchors, cursor=context.cursor)
+        result.articles = follow_window(result.articles, context.baseline_boundary, anchors)
+        return result
+
+    def fetch_incremental(self, uid: str, seen_ids: list[str], *, cursor="") -> FetchResult:
+        account_type, _, token = str(uid).partition(":")
+        if account_type not in {"people", "org", "auto"} or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+            raise ValueError("知乎账号格式无效")
+        cookie = self._resolve_cookie(None)
+        headers = dict(_HEADERS, Accept="application/json")
+        if cookie:
+            headers["Cookie"] = cookie
+        candidates = [account_type] if account_type != "auto" else ["people", "org"]
+        seen, collected = set(seen_ids), {}
+        for candidate in candidates:
+            owner = "members" if candidate == "people" else "organizations"
+            root = f"https://www.zhihu.com/api/v4/{owner}/{token}/activities"
+            url = root + "?limit=20&desktop=true"
+            visited, resume = set(), cursor
+            for page in range(5):
+                # Validate server-provided pagination before forwarding Cookie.
+                parts = urlsplit(url)
+                if parts.scheme != "https" or parts.hostname != "www.zhihu.com" or parts.port not in (None, 443) or parts.username or parts.password or parts.path != urlsplit(root).path:
+                    return FetchResult(list(collected.values()), warning="知乎分页地址无效，本次补抓未完成")
+                if url in visited:
+                    return FetchResult(list(collected.values()), warning="知乎返回重复分页，本次补抓未完成")
+                visited.add(url)
+                try:
+                    response = requests.get(url, headers=headers, timeout=20, allow_redirects=False)
+                    if response.status_code == 404:
+                        break
+                    if response.status_code in {401, 403}:
+                        if collected:
+                            return FetchResult(list(collected.values()), next_cursor=url, warning="知乎后续分页需要登录或验证")
+                        return FetchResult(self._fetch_browser(candidate, token, cookie), warning="浏览器仅检查有限的公开内容，尚未确认完整历史范围")
+                    if response.status_code == 429:
+                        raise RuntimeError("知乎请求过于频繁，请稍后重试")
+                    if 300 <= response.status_code < 400:
+                        raise RuntimeError("知乎活动接口重定向，本次检查停止")
+                    response.raise_for_status()
+                    payload = response.json()
+                    parsed = parse_activity_api(payload, limit=100)
+                except Exception:
+                    if collected:
+                        return FetchResult(list(collected.values()), next_cursor=url, warning="知乎后续分页失败，已保存发现内容，下轮继续")
+                    raise
+                reached = any(item["article_id"] in seen for item in parsed)
+                collected.update({item["article_id"]: item for item in parsed})
+                paging = payload.get("paging") or {}
+                ended = paging.get("is_end") is True
+                if not resume and (reached or ended):
+                    return FetchResult(list(collected.values()), True, "anchor_reached" if reached else "end_reached")
+                next_url = resume or paging.get("next")
+                resume = ""
+                if not next_url:
+                    return FetchResult(list(collected.values()), warning="知乎未提供可确认的后续分页，本次范围有限")
+                url = urljoin(root, str(next_url))
+                time.sleep(1)
+            if collected:
+                return FetchResult(list(collected.values()), next_cursor=url, warning="知乎达到本轮分页预算，下轮继续补抓")
+        return FetchResult(self.fetch(uid), warning="知乎活动分页不可用，已回退有限范围检查")
+
     def fetch(self, uid: str, cookie_override: str | None = None) -> list[dict]:
         account_type, _, token = str(uid).strip().partition(":")
         if account_type not in {"people", "org", "auto"} or not token:
@@ -631,7 +699,7 @@ class ZhihuFetcher(PlatformFetcher):
         candidates = [account_type] if account_type != "auto" else ["people", "org"]
 
         # 默认使用本机加密保存的登录 Cookie（只发送给知乎，绝不打印、不落日志）。
-        # 显式传入空字符串时才强制匿名；传入非空字符串时使用该 Cookie。
+        # 显式空字符串会被拒绝；非空覆盖值与保存的 Cookie 都必须包含登录凭证。
         cookie = self._resolve_cookie(cookie_override)
 
         headers = dict(_HEADERS)

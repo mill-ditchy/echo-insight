@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src import state_manager
 
@@ -41,8 +42,17 @@ class StateManagerTests(unittest.TestCase):
 
         self.assertEqual(
             saved["sources"][key]["seen_ids"],
-            ["latest", "older", "newer"],
+            ["latest", "newer", "older"],
         )
+
+    def test_stale_snapshot_cannot_evict_recent_ids_at_retention_limit(self) -> None:
+        key = "bilibili:100"
+        state_manager.save_state({"sources": {key: {"seen_ids": ["new", "old1", "old2"]}}})
+        stale = {"sources": {key: {"seen_ids": ["old1", "old2", "old3"]}}}
+        with patch.object(state_manager, "MAX_SEEN_PER_SOURCE", 3):
+            state_manager.mark_seen([], stale)
+        article = {"platform": "bilibili", "source_uid": "100", "article_id": "new"}
+        self.assertEqual(state_manager.get_new_articles([article]), [])
 
     def test_corrupt_state_is_not_overwritten(self) -> None:
         state_manager.STATE_PATH.write_text("{broken", encoding="utf-8")

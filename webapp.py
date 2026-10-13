@@ -43,6 +43,7 @@ from src.processors.video_frame_extractor import VideoFrameExtractor, VisualFram
 from src.processors.deepseek_summarizer import DeepSeekSummarizer
 from src.processors.video_understanding import EVIDENCE_DIR
 from src.security.cache_paths import cache_file
+from src.security.request_limits import ApiBodyLimitMiddleware
 from src.check_history import list_checks
 from src.fetcher import enrich_article, needs_ai_summary, select_recent_unique_articles
 from src.platforms.registry import get_fetcher
@@ -62,6 +63,7 @@ from src.source_manager import (
 )
 from src.state_manager import load_state, mark_seen
 from src.storage_lock import interprocess_lock
+from src.storage import atomic_json
 from src.update_history import (
     MAX_ITEMS,
     dashboard_updates,
@@ -89,12 +91,31 @@ INTERVAL_OPTIONS = {
 }
 
 
-app = FastAPI(title="赛博情报局", version=__version__)
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    from src.update_history import initialize_storage, sync_history_from_summary_cache
+    initialize_storage("sqlite")
+    sync_history_from_summary_cache()
+    from src.task_worker import submit_articles, ensure_worker
+    from src.task_queue import next_due
+    history = list_updates(limit=None)
+    pending = [item for item in history
+               if needs_ai_summary(item) and item.get("ai_status") in {"", "pending", "processing"}]
+    _, jobs = submit_articles(pending)
+    for item in history:
+        if item.get("ai_summary") and item.get("platform") in {"xiaohongshu", "douyin"} and item.get("last_attempt_status") == "processing":
+            _start_visual_reanalysis(item)
+    if not jobs and next_due() is not None:
+        ensure_worker()
+    yield
+
+
+app = FastAPI(title="赛博情报局", version=__version__, lifespan=lifespan)
+app.add_middleware(ApiBodyLimitMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-_baseline_jobs: set[str] = set()
-_visual_jobs: set[str] = set()
-_baseline_jobs_lock = threading.Lock()
-_baseline_processing_semaphore = threading.Semaphore(1)
 _scheduler_config_lock = threading.RLock()
 
 
@@ -232,15 +253,7 @@ def _read_scheduler_config() -> dict:
 
 
 def _save_scheduler_config(config: dict) -> None:
-    SCHEDULER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = SCHEDULER_CONFIG_PATH.with_name(
-        f"{SCHEDULER_CONFIG_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(SCHEDULER_CONFIG_PATH)
+    atomic_json(SCHEDULER_CONFIG_PATH, config)
 
 
 def _hidden_creation_flags() -> int:
@@ -355,7 +368,7 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
         updates = list_updates(
             source_uid=str(source.get("uid", "")),
             platform=str(source.get("platform", "")),
-            limit=200,
+            limit=None,
         )
     content_type_order = (
         (("video", "视频"),)
@@ -370,7 +383,7 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
     )
     content_types = []
     if source.get("platform") == "xiaohongshu":
-        content_type_order = (("image_note", "图文"),)
+        content_type_order = (("image_note", "图文"), ("video", "视频"))
     if source.get("platform") == "douyin":
         content_type_order = (("video", "视频"), ("image_note", "图文"))
     for content_type, label in content_type_order:
@@ -387,8 +400,13 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
                 "count": len(matched),
                 "unread_count": sum(1 for item in matched if not item.get("read")),
             })
+    from src.collection_state import get_scan
+    scan = get_scan(str(source.get("platform", "")), str(source.get("uid", "")))
     return {
         **source,
+        "scan_status": scan.get("scan_status", "unknown"),
+        "scan_warning": scan.get("warning", ""),
+        "last_success_at": scan.get("last_success_at"),
         **({"collection_status": public_source_status(str(source.get("uid", "")))} if source.get("platform") == "xiaohongshu" else {}),
         **({"collection_status": douyin_source_status(str(source.get("uid", "")))} if source.get("platform") == "douyin" else {}),
         "uid": str(source.get("uid", "")),
@@ -405,8 +423,7 @@ def _source_payloads(sources: list[dict], history: list[dict]) -> list[dict]:
     for item in history:
         key = (str(item.get("platform", "")), str(item.get("source_uid", "")))
         updates = grouped.setdefault(key, [])
-        if len(updates) < 200:
-            updates.append(item)
+        updates.append(item)
     return [
         _source_payload(source, grouped.get((str(source.get("platform", "")), str(source.get("uid", ""))), []))
         for source in sources
@@ -414,168 +431,31 @@ def _source_payloads(sources: list[dict], history: list[dict]) -> list[dict]:
 
 
 def _start_baseline_processing(source: dict, articles: list[dict]) -> bool:
-    """在后台处理首次展示的最近三条内容，不阻塞页面操作。"""
-    platform = source.get("platform", "")
-    uid = str(source.get("uid", ""))
-    job_key = f"{platform}:{uid}"
-    pending_articles = [
-        article
-        for article in articles
-        if needs_ai_summary(article)
-        if article.get("ai_status") not in {"available", "error"}
-    ][:3]
-    if not pending_articles:
-        return False
-
-    with _baseline_jobs_lock:
-        if job_key in _baseline_jobs:
-            return False
-        _baseline_jobs.add(job_key)
-
-    def worker() -> None:
-        try:
-            with _baseline_processing_semaphore:
-                for index, raw_article in enumerate(pending_articles):
-                    article = dict(raw_article)
-                    article["platform"] = platform
-                    article["source_uid"] = uid
-                    article["source"] = source.get("name", article.get("source", "未知来源"))
-                    article["category"] = source.get("category", article.get("category", "B站"))
-                    current_id = str(
-                        article.get("article_id")
-                        or article.get("video_id")
-                        or article.get("id")
-                        or ""
-                    )
-                    if not current_id:
-                        continue
-                    if platform in {"xiaohongshu", "douyin"}:
-                        from src.processors.xiaohongshu_summary import note_analysis_running
-                        if note_analysis_running(current_id):
-                            continue
-                    first_stage = "subtitle" if platform == "bilibili" else "summarizing"
-                    if platform == "douyin":
-                        first_stage = "media_download" if article.get("content_type") == "video" else "note_reading"
-                    update_ai_result(platform, current_id, "processing", stage=first_stage)
-                    try:
-                        enrich_article(
-                            article,
-                            progress_callback=lambda stage: update_ai_result(
-                                platform,
-                                current_id,
-                                "processing",
-                                stage=stage,
-                            ),
-                        )
-                        update_ai_result(
-                            platform,
-                            current_id,
-                            "available",
-                            ai_summary=article.get("ai_summary", ""),
-                            ai_model=article.get("ai_model", ""),
-                            analysis_mode=article.get("ai_analysis_mode", ""),
-                            frame_count=int(article.get("ai_frame_count", 0)),
-                            visual_error=article.get("visual_error", ""),
-                            analysis_details=article,
-                            summary_strategy=article.get("summary_strategy", ""),
-                            router_version=article.get("summary_router_version", ""),
-                            stage="completed",
-                        )
-                    except Exception as exc:
-                        update_ai_result(
-                            platform,
-                            current_id,
-                            "error",
-                            error=str(exc),
-                            visual_error=article.get("visual_error", ""),
-                            stage="failed",
-                        )
-                    if index < len(pending_articles) - 1:
-                        time.sleep(8)
-        finally:
-            with _baseline_jobs_lock:
-                _baseline_jobs.discard(job_key)
-
-    threading.Thread(
-        target=worker,
-        name=f"baseline-summary-{uid}",
-        daemon=True,
-    ).start()
-    return True
+    """Submit all pending articles to the durable shared analysis queue."""
+    from src.task_worker import submit_articles
+    pending = []
+    for raw in articles:
+        if not needs_ai_summary(raw) or raw.get("ai_status") in {"available", "error"}:
+            continue
+        item = dict(raw)
+        item.update(platform=source.get("platform", item.get("platform", "")),
+                    source_uid=str(source.get("uid", item.get("source_uid", ""))),
+                    source=source.get("name", item.get("source", "未知来源")))
+        pending.append(item)
+    started, _jobs = submit_articles(pending)
+    return started
 
 
 def _start_visual_reanalysis(item: dict) -> bool:
-    """在全局单队列中重新生成一条视频的视觉简报。"""
-    platform = str(item.get("platform", ""))
-    current_id = str(item.get("article_id", ""))
-    if platform not in {"bilibili", "xiaohongshu", "douyin"} or not current_id or not item.get("link"):
+    from src.task_worker import submit_articles
+    if item.get("platform") not in {"bilibili", "xiaohongshu", "douyin"} or not item.get("article_id") or not item.get("link"):
         return False
-    if platform in {"xiaohongshu", "douyin"}:
+    if item.get("platform") in {"xiaohongshu", "douyin"}:
         from src.processors.xiaohongshu_summary import note_analysis_running
-        if note_analysis_running(current_id):
+        if note_analysis_running(str(item["article_id"])):
             return False
-    job_key = f"{platform}:{current_id}"
-    with _baseline_jobs_lock:
-        if job_key in _visual_jobs:
-            return False
-        _visual_jobs.add(job_key)
-
-    try:
-        update_ai_result(platform, current_id, "processing", stage="waiting", analysis_details=item)
-    except Exception:
-        with _baseline_jobs_lock:
-            _visual_jobs.discard(job_key)
-        raise
-
-    def worker() -> None:
-        try:
-            with _baseline_processing_semaphore:
-                update_ai_result(platform, current_id, "processing", stage="note_reading" if platform in {"xiaohongshu", "douyin"} else "subtitle")
-                article = dict(item)
-                try:
-                    enrich_article(
-                        article,
-                        progress_callback=lambda stage: update_ai_result(
-                            platform,
-                            current_id,
-                            "processing",
-                            stage=stage,
-                        ),
-                        use_cache=platform not in {"xiaohongshu", "douyin"} and item.get("ai_completeness") == "partial",
-                    )
-                    update_ai_result(
-                        platform,
-                        current_id,
-                        "available",
-                        ai_summary=article.get("ai_summary", ""),
-                        ai_model=article.get("ai_model", ""),
-                        analysis_mode=article.get("ai_analysis_mode", ""),
-                        frame_count=int(article.get("ai_frame_count", 0)),
-                        visual_error=article.get("visual_error", ""),
-                        analysis_details=article,
-                        summary_strategy=article.get("summary_strategy", ""),
-                        router_version=article.get("summary_router_version", ""),
-                        stage="completed",
-                    )
-                except Exception as exc:
-                    update_ai_result(
-                        platform,
-                        current_id,
-                        "error",
-                        error=str(exc),
-                        visual_error=article.get("visual_error", ""),
-                        stage="failed",
-                    )
-        finally:
-            with _baseline_jobs_lock:
-                _visual_jobs.discard(job_key)
-
-    threading.Thread(
-        target=worker,
-        name=f"visual-summary-{current_id}",
-        daemon=True,
-    ).start()
-    return True
+    started, _jobs = submit_articles([item], reanalyze=True)
+    return started
 
 
 @app.get("/")
@@ -584,15 +464,19 @@ def index() -> FileResponse:
 
 
 @app.get("/api/dashboard")
-def dashboard() -> dict:
-    history = list_updates(limit=MAX_ITEMS)
+def dashboard(offset: int = 0, limit: int = 100) -> dict:
+    history = list_updates(limit=None)
     updates, unread_count = dashboard_updates(history)
     unread_updates = [item for item in updates if not item.get("read")]
+    limit, offset = min(2000, max(1, limit)), max(0, offset)
+    total = len(updates)
     sources = _source_payloads(list_sources(), history)
     checks = list_checks(limit=1)
     return {
-        "updates": updates,
-        "unread_updates": unread_updates,
+        "updates": updates[offset:offset + limit],
+        "unread_updates": unread_updates[:limit],
+        "has_more": offset + limit < total,
+        "next_offset": offset + min(limit, max(0, total - offset)),
         "unread_count": unread_count,
         "sources": sources,
         "source_count": len(sources),
@@ -604,6 +488,57 @@ def dashboard() -> dict:
 @app.post("/api/updates/mark-read")
 def mark_updates_read() -> dict:
     return {"changed": mark_all_read()}
+
+
+@app.get("/api/tasks")
+def task_status() -> dict:
+    from src.task_queue import snapshot
+    return snapshot()
+
+
+@app.post("/api/tasks/{job_id}/cancel")
+def cancel_task(job_id: int) -> dict:
+    from src.task_queue import cancel
+    if not cancel(job_id):
+        raise HTTPException(status_code=409, detail="仅能取消等待执行的任务")
+    return {"cancelled": True}
+
+
+class TaskBudgetRequest(BaseModel):
+    max_daily_attempts: int = Field(ge=0, le=10000)
+
+
+class CacheCleanupRequest(BaseModel):
+    days: int = Field(default=30, ge=1, le=3650)
+
+
+@app.get("/api/cache/preview")
+def preview_media_cache(days: int = 30) -> dict:
+    from src.cache_maintenance import preview
+    result = preview(min(3650, max(1, days)))
+    return {"days": result["days"], "file_count": len(result["files"]), "bytes": result["bytes"]}
+
+
+@app.post("/api/cache/cleanup")
+def cleanup_media_cache(payload: CacheCleanupRequest) -> dict:
+    from src.cache_maintenance import cleanup
+    try:
+        return cleanup(payload.days)
+    except (TimeoutError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="后台仍有任务，请完成后再清理原始媒体") from exc
+
+
+@app.put("/api/tasks/budget")
+def update_task_budget(payload: TaskBudgetRequest) -> dict:
+    from src.task_queue import save_task_budget
+    return {"budget": save_task_budget(payload.max_daily_attempts)}
+
+
+@app.get("/api/history")
+def content_history(platform: str | None = None, source_uid: str | None = None, offset: int = 0, limit: int = 50) -> dict:
+    limit = min(100, max(1, limit))
+    items = list_updates(source_uid=source_uid, platform=platform, limit=limit + 1, offset=max(0, offset))
+    return {"items": items[:limit], "has_more": len(items) > limit, "next_offset": max(0, offset) + min(limit, len(items))}
 
 
 @app.post("/api/updates/{platform}/{current_article_id}/mark-read")
@@ -638,7 +573,7 @@ def xhs_logout() -> dict:
 @app.get("/api/notes/{current_article_id}/images/{index}")
 def note_image(current_article_id: str, index: int):
     from src.processors.xiaohongshu_images import download_image
-    item = next((i for i in list_updates(limit=MAX_ITEMS)
+    item = next((i for i in list_updates(limit=None)
                  if i.get("platform") == "xiaohongshu" and i.get("article_id") == current_article_id), None)
     if not item or index < 0 or index >= min(len(item.get("images") or []), 60):
         raise HTTPException(status_code=404, detail="没有找到这张笔记图片")
@@ -683,15 +618,36 @@ def bilibili_qr_status(payload: QrStatusRequest) -> dict:
 
 @app.get("/api/sources")
 def sources() -> dict:
-    return {"sources": _source_payloads(list_sources(), list_updates(limit=MAX_ITEMS))}
+    return {"sources": _source_payloads(list_sources(), list_updates(limit=None))}
 
 
 @app.get("/api/sources/{platform}/{uid}")
-def source_detail(platform: str, uid: str) -> dict:
+def source_detail(platform: str, uid: str, limit: int = 200) -> dict:
     source = get_source(platform, uid)
     if not source:
         raise HTTPException(status_code=404, detail="没有找到这位博主")
-    videos = list_updates(source_uid=uid, platform=platform, limit=200)
+    videos = list_updates(source_uid=uid, platform=platform, limit=None)
+    limit = min(2000, max(1, limit))
+    return {"source": _source_payload(source, videos), "videos": videos[:limit],
+            "has_more": len(videos) > limit, "next_offset": min(limit, len(videos)),
+            "needs_preparation": not videos, "warning": None}
+
+
+@app.get("/api/history/{platform}/{current_article_id}")
+def content_item(platform: str, current_article_id: str) -> dict:
+    from src.update_history import get_update
+    item = get_update(platform, current_article_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="没有找到这条内容")
+    return {"item": item}
+
+
+@app.post("/api/sources/{platform}/{uid}/prepare")
+def prepare_source_content(platform: str, uid: str) -> dict:
+    source = get_source(platform, uid)
+    if not source:
+        raise HTTPException(status_code=404, detail="没有找到这位博主")
+    videos = list_updates(source_uid=uid, platform=platform, limit=None)
     warning = None
     if not videos:
         fetcher = get_fetcher(platform)
@@ -705,7 +661,9 @@ def source_detail(platform: str, uid: str) -> dict:
                 article["platform"] = platform
                 article["source_uid"] = uid
             record_baseline_preview(existing_articles)
-            videos = list_updates(source_uid=uid, platform=platform, limit=200)
+            if platform == "xiaohongshu" and existing_articles:
+                mark_seen(existing_articles, load_state())
+            videos = list_updates(source_uid=uid, platform=platform, limit=None)
         except Exception as exc:
             warning = f"最近内容读取失败：{exc}"
     pending_videos = [
@@ -720,12 +678,9 @@ def source_detail(platform: str, uid: str) -> dict:
         for video in videos:
             if (video.get("requested_note_reading_mode") or (platform == "douyin" and video.get("ai_summary"))) and video.get("last_attempt_status") == "processing":
                 _start_visual_reanalysis(video)
-    videos = list_updates(source_uid=uid, platform=platform, limit=200)
-    return {
-        "source": _source_payload(source, videos),
-        "videos": videos,
-        "warning": warning,
-    }
+    result = source_detail(platform, uid)
+    result["warning"] = warning
+    return result
 
 
 @app.delete("/api/sources/{platform}/{uid}")
@@ -746,7 +701,7 @@ def retry_source_summaries(platform: str, uid: str) -> dict:
     if not source:
         raise HTTPException(status_code=404, detail="没有找到这位博主")
     reset_count = reset_ai_errors(uid, platform=platform)
-    videos = list_updates(source_uid=uid, platform=platform, limit=200)
+    videos = list_updates(source_uid=uid, platform=platform, limit=None)
     pending = [
         video
         for video in videos
@@ -769,7 +724,7 @@ def reanalyze_video(platform: str, current_article_id: str, payload: NoteAnalysi
     item = next(
         (
             video
-            for video in list_updates(limit=1000)
+            for video in list_updates(limit=None)
             if video.get("platform") == platform
             and str(video.get("article_id", "")) == str(current_article_id)
         ),
@@ -777,7 +732,7 @@ def reanalyze_video(platform: str, current_article_id: str, payload: NoteAnalysi
     )
     if not item:
         raise HTTPException(status_code=404, detail="没有找到这条内容")
-    if platform == "xiaohongshu" or (platform == "douyin" and item.get("content_type") == "image_note"):
+    if platform in {"xiaohongshu", "douyin"} and item.get("content_type") == "image_note":
         item["requested_note_reading_mode"] = payload.reading_mode if payload else item.get("ai_note_reading_mode") or ("full" if platform == "douyin" else "quick")
     started = _start_visual_reanalysis(item)
     return {
@@ -888,8 +843,9 @@ def create_source(payload: SourceCreate) -> dict:
     initial_state = load_state()
     if platform in {"xiaohongshu", "douyin"} and not existing_articles:
         initial_state.setdefault("sources", {}).setdefault(f"{platform}:{uid}", {"name": display_name, "seen_ids": []})
-    mark_seen(existing_articles, initial_state)
     previews = record_baseline_preview(existing_articles)
+    # A failed history write must not mark unseen content as already collected.
+    mark_seen(existing_articles, initial_state)
     _start_baseline_processing(source or {}, previews)
 
     message = (
@@ -897,7 +853,7 @@ def create_source(payload: SourceCreate) -> dict:
         "之后的新内容会进入最新消息"
     )
     if platform == "xiaohongshu" and not previews:
-        message = f"已关注 {display_name}，近期暂无图文笔记；之后发布的图文会自动收录"
+        message = f"已关注 {display_name}，近期暂无可读取作品；之后发布的视频和图文会自动收录"
     return {
         "source": _source_payload(source or {}),
         "baseline_count": len(existing_articles),
@@ -962,7 +918,7 @@ def video_evidence(platform: str, current_id: str) -> dict:
         raise HTTPException(status_code=404, detail="没有视频画面证据")
     try:
         directory = (EVIDENCE_DIR / cache_file(EVIDENCE_DIR, current_id).stem).resolve()
-        item = next((row for row in list_updates(limit=1000) if row.get("platform") == platform and str(row.get("article_id")) == current_id), {})
+        item = next((row for row in list_updates(limit=None) if row.get("platform") == platform and str(row.get("article_id")) == current_id), {})
         path = Path(item.get("ai_evidence_file") or directory / "manifest.json").resolve()
         if path.parent != directory or not (path.name == "manifest.json" or re.fullmatch(r"evidence_[a-f0-9]{64}\.json", path.name)):
             raise ValueError("证据地址超出视频目录")

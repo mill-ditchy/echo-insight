@@ -1,7 +1,6 @@
 """B站视频字幕读取与本地缓存。"""
 
 import json
-import os
 import re
 import threading
 import urllib.parse
@@ -13,6 +12,7 @@ from urllib.request import Request
 
 from ..security.cache_paths import cache_file
 from ..security.network import open_bilibili_request as urlopen
+from ..storage import atomic_json
 
 from .bilibili import _HEADERS, _get_configured_cookie
 
@@ -196,15 +196,7 @@ class BilibiliSubtitleFetcher:
     @staticmethod
     def _save_cache(result: TranscriptResult) -> None:
         with _transcript_cache_lock:
-            TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-            temp_path = result.cache_path.with_name(
-                f"{result.cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            temp_path.write_text(
-                json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temp_path.replace(result.cache_path)
+            atomic_json(result.cache_path, result.to_dict())
 
     def fetch(self, video_url: str, use_cache: bool = True) -> TranscriptResult | None:
         """读取一个B站视频的字幕；没有字幕时返回 None。"""

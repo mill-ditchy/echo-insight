@@ -1,13 +1,13 @@
 """保存每次自动检查的结果，供设置页查看。"""
 
 import json
-import os
 import re
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from .storage_lock import interprocess_lock
+from .storage import atomic_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -65,15 +65,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = DATA_PATH.with_name(
-        f"{DATA_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(DATA_PATH)
+    atomic_json(DATA_PATH, data)
 
 
 def record_check(

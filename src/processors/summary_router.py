@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..security.cache_paths import cache_file
+from ..storage import atomic_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -229,11 +230,5 @@ class SummaryRouter:
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "cache_path": str(cache_path),
         }
-        ROUTE_DIR.mkdir(parents=True, exist_ok=True)
-        temp_path = cache_path.with_suffix(".tmp")
-        temp_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temp_path.replace(cache_path)
+        atomic_json(cache_path, result)
         return result

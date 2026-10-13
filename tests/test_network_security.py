@@ -71,6 +71,25 @@ class PlatformNetworkSecurityTests(unittest.TestCase):
 
 
 class AiNetworkSecurityTests(unittest.TestCase):
+    def test_json_escaped_key_is_redacted_after_decoding(self):
+        summarizer = DeepSeekSummarizer()
+        response = Mock(status_code=401, ok=False,
+                        text=r'{"error":{"message":"invalid \u0074est-key"}}')
+        with patch("src.processors.deepseek_summarizer.requests.post", return_value=response):
+            with self.assertRaises(RuntimeError) as raised:
+                summarizer._call_api([], "test", api_key="test-key")
+        self.assertNotIn("test-key", str(raised.exception))
+        self.assertIn("已隐藏密钥", str(raised.exception))
+
+    def test_error_diagnostic_length_is_bounded(self):
+        summarizer = DeepSeekSummarizer()
+        response = Mock(status_code=401, ok=False,
+                        text='{"error":{"message":"' + "x" * 20000 + '"}}')
+        with patch("src.processors.deepseek_summarizer.requests.post", return_value=response):
+            with self.assertRaises(RuntimeError) as raised:
+                summarizer._call_api([], "test", api_key="test-key")
+        self.assertLess(len(str(raised.exception)), 600)
+
     def test_http_endpoint_rejected_before_key_or_body_is_sent(self):
         summarizer = DeepSeekSummarizer()
         summarizer.api_url = "http://example.com/api"

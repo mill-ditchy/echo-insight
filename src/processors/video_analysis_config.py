@@ -1,11 +1,11 @@
 """Bounded video analysis settings, independent of provider credentials."""
 
 import json
-import os
 import threading
 from pathlib import Path
 
 from ..storage_lock import interprocess_lock
+from ..storage import atomic_json
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "video_analysis.json"
 DEFAULTS = {
@@ -44,13 +44,6 @@ def load_settings() -> dict:
     if not isinstance(data, dict):
         raise ValueError("视频分析配置必须为对象")
     return validate_settings(data)
-
-
-def atomic_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(path)
 
 
 def save_settings(data: dict) -> dict:

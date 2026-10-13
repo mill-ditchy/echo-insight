@@ -12,7 +12,9 @@ from .processors.summary_router import SummaryRouter
 from .processors.video_frame_extractor import VideoFrameExtractor
 from .processors.whisper_transcriber import WhisperTranscriber, NoSpeechError
 from .source_manager import list_sources
-from .state_manager import article_id
+from .content_identity import article_id
+from .processors.transcript_format import format_transcript_for_summary as _format_transcript_for_summary
+from .analysis_config import load_analysis_config, public_analysis_config, config_fingerprint
 
 
 SUBTITLE_FETCH_LIMIT_PER_SOURCE = 1
@@ -44,37 +46,13 @@ def needs_ai_summary(article: dict) -> bool:
     if platform == "bilibili":
         return True
     if platform == "xiaohongshu":
-        return article.get("content_type") == "image_note"
+        return article.get("content_type") in {"image_note", "video"}
     if platform == "douyin":
         return article.get("content_type") in {"image_note", "video"}
     return (
         platform == "zhihu"
         and str(article.get("content_type", "")).lower() in ZHIHU_AI_CONTENT_TYPES
     )
-
-
-def _format_transcript_for_summary(transcript, window_seconds: int = 300) -> str:
-    """按时间窗口整理字幕，让模型明确覆盖视频的开头、中段和结尾。"""
-    if not transcript.segments:
-        return transcript.full_text
-
-    windows: list[tuple[int, list[str]]] = []
-    for segment in transcript.segments:
-        window_start = int(segment.start // window_seconds) * window_seconds
-        if not windows or windows[-1][0] != window_start:
-            windows.append((window_start, []))
-        windows[-1][1].append(segment.text)
-
-    def clock(seconds: int) -> str:
-        return f"{seconds // 60:02d}:{seconds % 60:02d}"
-
-    sections = []
-    for window_start, texts in windows:
-        window_end = window_start + window_seconds
-        sections.append(
-            f"[{clock(window_start)}-{clock(window_end)}]\n" + " ".join(texts)
-        )
-    return "\n\n".join(sections)
 
 
 def fetch_metadata() -> tuple[list[dict], list[str]]:
@@ -87,6 +65,8 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
     print(f"共 {len(sources)} 个信息源，开始抓取...\n")
     all_articles = []
     errors = []
+    from .state_manager import load_state
+    state = load_state()
 
     for source in sources:
         name = source["name"]
@@ -101,27 +81,34 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
             print(f"  [跳过] 未找到平台插件：{platform}")
             continue
 
+        from .platforms.base import FetchContext, FetchResult
+        from .collection_state import get_scan, record_scan
+        saved = state.get("sources", {}).get(f"{platform}:{uid}")
+        checkpoint = get_scan(platform, uid)
+        anchors = checkpoint.get("frozen_anchors") or (saved or {}).get("seen_ids", [])
+        context = FetchContext(list((saved or {}).get("seen_ids", [])), checkpoint.get("next_cursor", ""),
+                               (saved or {}).get("baseline_boundary", 0), checkpoint, saved is None, list(anchors))
+        result = None
         try:
-            from .platforms.xiaohongshu import XiaohongshuFetcher
-            from .platforms.douyin import DouyinFetcher
-            if isinstance(fetcher, (XiaohongshuFetcher, DouyinFetcher)):
-                from .state_manager import load_state
-                saved = load_state().get("sources", {}).get(f"{platform}:{uid}")
-                articles = fetcher.fetch_incremental(uid, saved.get("seen_ids", [])) if saved is not None else fetcher.fetch(uid)
-                if platform == "douyin":
-                    from .platforms.douyin_status import get_source_status
-                else:
-                    from .platforms.xiaohongshu_status import get_source_status
-                warning = get_source_status(uid).get("scan_warning", "")
-                if warning:
-                    errors.append(f"{name} 补抓范围有限: {warning}")
-            else:
-                articles = select_recent_unique_articles(fetcher.fetch(uid))
-        except Exception as e:
-            message = f"{name} 抓取失败: {e}"
+            result = fetcher.scan(uid, context)
+            if not isinstance(result, FetchResult):
+                raise TypeError("平台 scan 必须返回 FetchResult")
+            combined = {article_id(item): item for item in [*checkpoint.get("discovered", []), *result.articles]}
+            articles = list(combined.values())
+            if context.initial:
+                # A feed may supply its whole window for identity acknowledgement.
+                for item in articles:
+                    item["is_baseline"] = True
+            if result.warning:
+                errors.append(f"{name} 补抓范围有限: {result.warning}")
+        except Exception as exc:
+            message = f"{name} 抓取失败: {exc}"
             print(f"  [错误] {message}")
             errors.append(message)
             articles = []
+            record_scan(platform, uid, FetchResult(), error=message)
+            result = None
+            continue
 
         # 统一补上来源和分类字段
         for a in articles:
@@ -129,11 +116,14 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
             a["category"] = category
             a["platform"] = platform
             a["source_uid"] = uid
+        if result is not None:
+            result.articles = articles
+            record_scan(platform, uid, result, anchor_ids=anchors)
 
         count = len(articles)
         if count:
             print(f"  [完成] 抓到 {count} 篇")
-        elif platform in {"xiaohongshu", "douyin"}:
+        elif result is not None and result.complete:
             print("  [完成] 已读取主页，没有新内容")
         else:
             message = f"{name} 未抓到内容"
@@ -146,23 +136,30 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
     return all_articles, errors
 
 
-def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = True) -> None:
+def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = True, analysis_config: dict | None = None) -> None:
     """为B站视频或知乎长内容生成AI简报；失败时抛出异常。"""
     if not needs_ai_summary(article):
         article["ai_status"] = "not_applicable"
         article["ai_stage"] = "completed"
         return
 
+    config = load_analysis_config() if analysis_config is None else analysis_config
+    article["ai_execution_config"] = public_analysis_config(config)
+    article["ai_execution_config_hash"] = config_fingerprint(config)
     if article.get("platform") == "zhihu":
-        _enrich_zhihu_article(article, progress_callback=progress_callback)
+        _enrich_zhihu_article(article, progress_callback=progress_callback, provider_config=config["provider"])
         return
     if article.get("platform") == "xiaohongshu":
-        from .processors.xiaohongshu_summary import enrich_note
-        enrich_note(article, progress_callback=progress_callback, use_cache=use_cache)
+        if article.get("content_type") == "video":
+            from .processors.xiaohongshu_video import enrich_video
+            enrich_video(article, progress_callback=progress_callback, use_cache=use_cache, analysis_config=config)
+        else:
+            from .processors.xiaohongshu_summary import enrich_note
+            enrich_note(article, progress_callback=progress_callback, use_cache=use_cache, analysis_config=config)
         return
     if article.get("platform") == "douyin":
         from .processors.douyin_summary import enrich_post
-        enrich_post(article, progress_callback=progress_callback, use_cache=use_cache)
+        enrich_post(article, progress_callback=progress_callback, use_cache=use_cache, analysis_config=config)
         return
 
     current_id = str(article.get("article_id") or article.get("video_id") or "")
@@ -175,7 +172,7 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
         if progress_callback:
             progress_callback(stage)
 
-    summarizer = DeepSeekSummarizer()
+    summarizer = DeepSeekSummarizer(provider_config=config["provider"], analysis_settings=config["video"])
     if not summarizer.is_configured():
         article["ai_status"] = "not_configured"
         raise RuntimeError("尚未配置AI API Key")
@@ -205,7 +202,7 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
             )
             frame_started = time.perf_counter()
             frame_future = visual_executor.submit(
-                VideoFrameExtractor().extract,
+                VideoFrameExtractor(analysis_settings=config["video"]).extract,
                 article["link"],
                 preliminary_plan,
             )
@@ -279,7 +276,7 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
                 frame_result = frame_future.result()
             else:
                 frame_started = time.perf_counter()
-                frame_result = VideoFrameExtractor().extract(
+                frame_result = VideoFrameExtractor(analysis_settings=config["video"]).extract(
                     article["link"],
                     summary_plan=summary_plan,
                 )
@@ -399,7 +396,7 @@ def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = T
     )
 
 
-def _enrich_zhihu_article(article: dict, progress_callback=None) -> None:
+def _enrich_zhihu_article(article: dict, progress_callback=None, *, provider_config=None) -> None:
     """使用知乎公开正文生成长内容简报，不把Cookie或账号信息发送给AI。"""
     current_id = str(article.get("article_id") or article.get("id") or "")
     title = str(article.get("title") or "无标题")
@@ -413,7 +410,7 @@ def _enrich_zhihu_article(article: dict, progress_callback=None) -> None:
             progress_callback(stage)
 
     progress("summarizing")
-    summarizer = DeepSeekSummarizer()
+    summarizer = DeepSeekSummarizer(provider_config=provider_config)
     if not summarizer.is_configured():
         article["ai_status"] = "not_configured"
         raise RuntimeError("尚未配置AI API Key")
@@ -511,7 +508,7 @@ def format_as_markdown(articles: list[dict]) -> str:
                         lines.append(f"**AI内容总结（{item.get('ai_model', '')}）**")
                         lines.append("")
                         lines.append(item.get("ai_summary", ""))
-                        if item.get("platform") == "xiaohongshu":
+                        if item.get("platform") == "xiaohongshu" and item.get("content_type") == "image_note":
                             lines.append("")
                             lines.append(f"图文范围：已读取 {item.get('ai_frame_count', 0)}/{item.get('image_count', 0)} 张图片。")
                             if item.get("ai_analysis_warnings"):
@@ -521,7 +518,7 @@ def format_as_markdown(articles: list[dict]) -> str:
                     elif item.get("ai_status") == "error":
                         lines.append("- AI总结：生成失败，请查看终端错误信息")
                     else:
-                        lines.append("- AI总结：正在阅读正文与图片" if item.get("platform") == "xiaohongshu" else "- AI总结：正在解析视频并生成简报")
+                        lines.append("- AI总结：正在阅读正文与图片" if item.get("content_type") == "image_note" else "- AI总结：正在解析视频并生成简报")
                     lines.append("")
 
     return "\n".join(lines)

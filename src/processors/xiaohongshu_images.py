@@ -4,31 +4,30 @@ import hashlib
 import io
 import os
 import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, HTTPRedirectHandler, build_opener
+from urllib.request import Request, build_opener
 
 from PIL import Image, ImageOps
 
 from ..platforms.xiaohongshu import IMAGE_DOMAINS
 from ..security.network import validate_https_url
+from ..security.downloads import copy_response_with_limit
+from ..security.redirects import DomainRedirect
 
 
 CACHE_DIR = Path(__file__).resolve().parents[2] / "output" / "xiaohongshu_images"
 MAX_BYTES = 8 * 1024 * 1024
 MAX_IMAGES = 6
 MAX_FULL_IMAGES = 30
+MAX_DOWNLOAD_SECONDS = 60
 _lock = threading.RLock()
 
 
-class ImageRedirect(HTTPRedirectHandler):
+class ImageRedirect(DomainRedirect):
     def __init__(self, domains=IMAGE_DOMAINS):
-        super().__init__()
-        self.domains = domains
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_https_url(newurl, self.domains)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        super().__init__(domains)
 
 
 def image_cache_key(url: str) -> str:
@@ -50,17 +49,16 @@ def download_image(url: str, *, domains=IMAGE_DOMAINS, referer="https://www.xiao
         if path.is_file():
             return path
         request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": referer})
+        deadline = time.monotonic() + MAX_DOWNLOAD_SECONDS
         with build_opener(ImageRedirect(domains)).open(request, timeout=18) as response:
             validate_https_url(response.geturl(), domains)
-            if int(response.headers.get("Content-Length") or 0) > MAX_BYTES:
-                raise ValueError("笔记图片超过8MB，本次跳过")
-            chunks, size = [], 0
-            while chunk := response.read(65536):
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError("笔记图片超过8MB，本次跳过")
-                chunks.append(chunk)
-        with Image.open(io.BytesIO(b"".join(chunks))) as original:
+            buffer = io.BytesIO()
+            try:
+                copy_response_with_limit(response, buffer, MAX_BYTES, "笔记图片", deadline=deadline)
+            except RuntimeError as exc:
+                raise ValueError(f"笔记图片读取失败（8MB上限）：{exc}") from exc
+        buffer.seek(0)
+        with Image.open(buffer) as original:
             if original.width * original.height > 40_000_000:
                 raise ValueError("笔记图片尺寸过大，本次跳过")
             image = ImageOps.exif_transpose(original).convert("RGB")

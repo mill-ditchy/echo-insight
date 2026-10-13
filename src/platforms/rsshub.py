@@ -6,8 +6,10 @@
   - /xiaohongshu/user/{uid}
 """
 
-import feedparser
-from .base import PlatformFetcher
+from urllib.parse import quote
+
+from .base import PlatformFetcher, FetchResult
+from .feed import fetch_feed
 
 # RSSHub 地址，部署时改成你的服务器地址
 # 例如: http://localhost:1200 或 https://your-server.com
@@ -26,27 +28,14 @@ class RsshubFetcher(PlatformFetcher):
         self.route_template = route_template
 
     def fetch(self, uid: str) -> list[dict]:
-        route = self.route_template.replace("{uid}", uid.strip())
+        route = self.route_template.replace("{uid}", quote(uid.strip(), safe=""))
         url = f"{RSSHUB_BASE}{route}"
+        return fetch_feed(url)
 
-        try:
-            feed = feedparser.parse(url)
-        except Exception as e:
-            print(f"  [RSSHub 错误] {e}")
-            return []
+    def scan(self, uid, context):
+        return self.fetch_incremental(uid, context.seen_ids, context=context.metadata)
 
-        if feed.bozo and not feed.entries:
-            err = feed.bozo_exception
-            print(f"  [RSSHub 抓取失败] {err}")
-            return []
-
-        articles = []
-        for entry in feed.entries[:3]:
-            articles.append({
-                "title": entry.get("title", "无标题"),
-                "link": entry.get("link", ""),
-                "published": entry.get("published", ""),
-                "summary": (entry.get("summary", "") or "")[:200],
-            })
-
-        return articles
+    def fetch_incremental(self, uid: str, seen_ids: list[str], *, context=None) -> FetchResult:
+        route = self.route_template.replace("{uid}", quote(uid.strip(), safe=""))
+        from .rss import RssFetcher
+        return RssFetcher().fetch_incremental(f"{RSSHUB_BASE}{route}", seen_ids, context=context)

@@ -3,8 +3,8 @@
 适用于：博客、新闻站、播客等自带 RSS 的网站。
 """
 
-import feedparser
-from .base import PlatformFetcher
+from .base import PlatformFetcher, FetchResult
+from .feed import fetch_feed
 
 
 class RssFetcher(PlatformFetcher):
@@ -12,26 +12,18 @@ class RssFetcher(PlatformFetcher):
 
     def fetch(self, uid: str) -> list[dict]:
         """uid 参数在这里就是完整的 RSS 链接地址。"""
-        url = uid.strip()
+        return fetch_feed(uid.strip())
 
-        try:
-            feed = feedparser.parse(url)
-        except Exception as e:
-            print(f"  [RSS 错误] {e}")
-            return []
+    def scan(self, uid, context):
+        return self.fetch_incremental(uid, context.seen_ids, context=context.metadata)
 
-        if feed.bozo and not feed.entries:
-            err = feed.bozo_exception
-            print(f"  [RSS 抓取失败] {err}")
-            return []
-
-        articles = []
-        for entry in feed.entries[:3]:
-            articles.append({
-                "title": entry.get("title", "无标题"),
-                "link": entry.get("link", ""),
-                "published": entry.get("published", ""),
-                "summary": (entry.get("summary", "") or "")[:200],
-            })
-
-        return articles
+    def fetch_incremental(self, uid: str, seen_ids: list[str], *, context=None) -> FetchResult:
+        context = context or {}
+        validators = {}
+        if context.get("etag"):
+            validators["If-None-Match"] = context["etag"]
+        if context.get("last_modified"):
+            validators["If-Modified-Since"] = context["last_modified"]
+        metadata = {}
+        articles = fetch_feed(uid.strip(), limit=None, validators=validators, response_meta=metadata)
+        return FetchResult(articles, True, "not_modified" if metadata.get("not_modified") else "feed_window", metadata=metadata)

@@ -14,7 +14,7 @@ from urllib.request import Request
 
 from ..security.network import open_bilibili_request as urlopen
 
-from .base import PlatformFetcher
+from .base import PlatformFetcher, FetchResult
 from ..security.secret_store import get_bilibili_cookie
 
 # ====================================================================
@@ -199,6 +199,110 @@ def _sign_wbi(params: dict) -> dict:
 class BilibiliFetcher(PlatformFetcher):
     """B站 UP 主视频列表抓取（带 WBI 签名）。"""
 
+    def scan(self, uid, context):
+        if context.initial:
+            return super().scan(uid, context)
+        from .incremental import follow_window
+        anchors = context.anchor_ids or context.seen_ids
+        result = self.fetch_incremental(uid, anchors, cursor=context.cursor)
+        result.articles = follow_window(result.articles, context.baseline_boundary, anchors)
+        return result
+
+    def fetch_incremental(self, uid: str, seen_ids: list[str], *, cursor: str = "") -> FetchResult:
+        if not str(uid).isdigit():
+            raise ValueError("B站 UID 应为纯数字")
+        seen, collected, visited = set(seen_ids), {}, set()
+        if cursor.startswith("posts:"):
+            page = int(cursor.split(":", 1)[1])
+            return self._fetch_posts_incremental(str(uid), seen, start_page=min(10000, max(1, page)))
+        offset, started = "", time.monotonic()
+        headers = _get_api_headers(str(uid))
+        # Inspect the home page on every run, then resume a saved older page.
+        resume = cursor
+        for _ in range(5):
+            query = {"host_mid": str(uid)}
+            if offset:
+                query["offset"] = offset
+            url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?" + urllib.parse.urlencode(query)
+            try:
+                with urlopen(Request(url, headers=headers), timeout=15) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except Exception:
+                if collected:
+                    return FetchResult(list(collected.values()), next_cursor=offset, warning="后续分页读取失败，已保存已发现内容，下轮继续")
+                return self._fetch_posts_incremental(str(uid), seen)
+            if payload.get("code") != 0:
+                if collected:
+                    return FetchResult(list(collected.values()), warning="动态接口失败，本次补抓未完成", next_cursor=offset)
+                return self._fetch_posts_incremental(str(uid), seen)
+            data = payload.get("data") or {}
+            reached = False
+            for item in data.get("items", []):
+                modules = item.get("modules") or {}
+                archive = ((modules.get("module_dynamic") or {}).get("major") or {}).get("archive") or {}
+                bvid = str(archive.get("bvid") or "")
+                if not bvid:
+                    continue
+                pinned = "置顶" in str(modules.get("module_tag") or "")
+                reached = reached or (bvid in seen and not pinned)
+                author = modules.get("module_author") or {}
+                timestamp = float(author.get("pub_ts") or 0)
+                collected[bvid] = {"video_id": bvid, "title": archive.get("title", "无标题"),
+                    "link": f"https://www.bilibili.com/video/{bvid}", "author_name": author.get("name", ""),
+                    "published": datetime.fromtimestamp(timestamp).isoformat(timespec="seconds") if timestamp else "",
+                    "published_ts": timestamp, "summary": str(archive.get("desc") or "")[:200]}
+                collected[bvid]["pinned"] = pinned
+            next_offset = str(data.get("offset") or "")
+            ended = data.get("has_more") in (False, 0)
+            if not resume and (reached or ended):
+                return FetchResult(list(collected.values()), True, "anchor_reached" if reached else "end_reached")
+            if resume and ended:
+                return FetchResult(list(collected.values()), True, "end_reached")
+            offset = resume or next_offset
+            resume = ""
+            if not offset or offset in visited:
+                return FetchResult(list(collected.values()), warning="分页位置无法确认，本次补抓未完成")
+            visited.add(offset)
+            if time.monotonic() - started >= 60:
+                break
+            time.sleep(1)
+        return FetchResult(list(collected.values()), next_cursor=offset, warning="达到分页或时间预算，下轮继续补抓")
+
+    def _fetch_posts_incremental(self, uid, seen, start_page=1):
+        collected = {}
+        headers = _get_api_headers(uid)
+        pages = [1] + list(range(max(2, start_page), max(2, start_page) + 4))
+        for page in pages:
+            params = _sign_wbi({"mid": uid, "pn": str(page), "ps": "30", "order": "pubdate"})
+            url = "https://api.bilibili.com/x/space/wbi/arc/search?" + urllib.parse.urlencode(params)
+            try:
+                with urlopen(Request(url, headers=headers), timeout=15) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except Exception:
+                if collected:
+                    return FetchResult(list(collected.values()), next_cursor=f"posts:{page}", warning="投稿分页读取失败，已保存已发现内容，下轮继续")
+                raise
+            if payload.get("code") != 0:
+                if collected:
+                    return FetchResult(list(collected.values()), next_cursor=f"posts:{page}", warning="投稿后续分页失败，已保存已发现内容")
+                raise RuntimeError("B站投稿分页读取失败，请检查登录状态或稍后重试")
+            rows = ((payload.get("data") or {}).get("list") or {}).get("vlist") or []
+            reached = False
+            for row in rows:
+                bvid = str(row.get("bvid") or "")
+                if not bvid:
+                    continue
+                reached = reached or bvid in seen
+                timestamp = float(row.get("created") or 0)
+                collected[bvid] = {"video_id": bvid, "title": row.get("title", "无标题"),
+                    "link": f"https://www.bilibili.com/video/{bvid}", "published_ts": timestamp,
+                    "published": datetime.fromtimestamp(timestamp).isoformat(timespec="seconds") if timestamp else "",
+                    "summary": str(row.get("description") or "")[:200]}
+            if (reached and (page != 1 or start_page == 1)) or len(rows) < 30:
+                return FetchResult(list(collected.values()), True, "anchor_reached" if reached else "end_reached")
+            time.sleep(1)
+        return FetchResult(list(collected.values()), next_cursor=f"posts:{page + 1}", warning="投稿分页达到本轮预算，下轮继续补抓")
+
     def fetch(self, uid: str) -> list[dict]:
         uid = str(uid).strip()
         if not uid.isdigit():
@@ -239,6 +343,8 @@ class BilibiliFetcher(PlatformFetcher):
                             "video_id": bvid,
                             "author_name": author.get("name", ""),
                             "published": pub,
+                            "published_ts": ts,
+                            "pinned": "置顶" in str(modules.get("module_tag") or ""),
                             "summary": (archive.get("desc", "") or "")[:200],
                         })
                         if len(articles) >= 3:
@@ -316,6 +422,7 @@ class BilibiliFetcher(PlatformFetcher):
                 "link": f"https://www.bilibili.com/video/{bvid}",
                 "video_id": bvid,
                 "published": pub,
+                "published_ts": ts,
                 "summary": (v.get("description", "") or "")[:200],
             })
 

@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from src.fetcher import fetch_metadata, select_recent_unique_articles
 from src.state_manager import get_new_articles
+from src.platforms.bilibili import BilibiliFetcher
 import scheduler
 
 
@@ -50,12 +51,15 @@ class RecentContentWindowTests(unittest.TestCase):
             {"name": "甲", "platform": "bilibili", "uid": "1", "category": "B站"},
             {"name": "乙", "platform": "bilibili", "uid": "2", "category": "B站"},
         ]
-        fetcher = Mock()
-        fetcher.fetch.side_effect = [
+        fetcher = BilibiliFetcher()
+        fetcher.fetch = Mock(side_effect=[
             [article("a5"), article("a4"), article("a3"), article("a2")],
             [article("b5"), article("b4"), article("b3"), article("b2")],
-        ]
+        ])
         with (
+            patch("src.state_manager.load_state", return_value={"sources": {}}),
+            patch("src.collection_state.get_scan", return_value={}),
+            patch("src.collection_state.record_scan"),
             patch("src.fetcher.list_sources", return_value=sources),
             patch("src.fetcher.get_fetcher", return_value=fetcher),
         ):

@@ -1,13 +1,13 @@
 """记录已经处理过的内容，避免重复总结和重复通知。"""
 
-import hashlib
 import json
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from .storage_lock import interprocess_lock
+from .storage import atomic_json
+from .content_identity import article_id, source_key
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -21,13 +21,22 @@ def _empty_state() -> dict:
     return {"version": 1, "sources": {}}
 
 
+def _merge_database_state(state):
+    from . import update_history
+    if STATE_PATH.parent == update_history.DATA_PATH.parent and update_history.database().path.exists():
+        with update_history.database().read_connection() as db:
+            for row in db.execute("SELECT key,value FROM metadata WHERE key LIKE 'state:%'"):
+                state["sources"][row["key"][6:]] = json.loads(row["value"])
+    return state
+
+
 def load_state() -> dict:
     if not STATE_PATH.exists():
-        return _empty_state()
+        return _merge_database_state(_empty_state())
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("sources"), dict):
-            return data
+            return _merge_database_state(data)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"去重状态文件无法读取，已停止写入以保护原数据：{STATE_PATH}"
@@ -36,15 +45,7 @@ def load_state() -> dict:
 
 
 def _save_state_unlocked(state: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = STATE_PATH.with_name(
-        f"{STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(STATE_PATH)
+    atomic_json(STATE_PATH, state)
 
 
 def save_state(state: dict) -> None:
@@ -52,29 +53,27 @@ def save_state(state: dict) -> None:
         _save_state_unlocked(state)
 
 
-def article_id(article: dict) -> str:
-    explicit = article.get("video_id") or article.get("article_id") or article.get("id")
-    if explicit:
-        return str(explicit)
-    link = article.get("link", "")
-    return hashlib.sha256(link.encode("utf-8")).hexdigest()[:24]
 
 
-def source_key(article: dict) -> str:
-    return f"{article.get('platform', 'unknown')}:{article.get('source_uid', article.get('source', 'unknown'))}"
 
 
 def get_new_articles(articles: list[dict], state: dict | None = None) -> list[dict]:
-    state = state or load_state()
+    state = load_state() if state is None else state
     new_articles = []
     selected_ids: dict[str, set[str]] = {}
+    seen_by_source: dict[str, set[str]] = {}
     for article in articles:
         key = source_key(article)
-        source = state["sources"].get(key, {})
-        seen = set(source.get("seen_ids", []))
+        if key not in seen_by_source:
+            source = state["sources"].get(key, {})
+            seen_by_source[key] = set(source.get("seen_ids", []))
+            from . import update_history
+            if STATE_PATH.parent == update_history.DATA_PATH.parent and update_history.uses_sqlite():
+                seen_by_source[key].update(update_history.database().known_content_ids(article.get("platform", ""), article.get("source_uid", "")))
+        seen = seen_by_source[key]
         current_id = article_id(article)
         batch_seen = selected_ids.setdefault(key, set())
-        if current_id in seen or current_id in batch_seen:
+        if current_id in seen or article.get("legacy_id") in seen or current_id in batch_seen:
             continue
         batch_seen.add(current_id)
         new_articles.append(article)
@@ -87,8 +86,10 @@ def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
         if state and isinstance(state.get("sources"), dict):
             for key, incoming in state["sources"].items():
                 target = latest["sources"].setdefault(key, dict(incoming))
-                merged_ids = list(incoming.get("seen_ids", [])) + list(
-                    target.get("seen_ids", [])
+                # Disk is newer than the caller's snapshot. Keep its IDs first
+                # so truncation cannot evict content another process just saved.
+                merged_ids = list(target.get("seen_ids", [])) + list(
+                    incoming.get("seen_ids", [])
                 )
                 target["seen_ids"] = list(dict.fromkeys(merged_ids))[
                     :MAX_SEEN_PER_SOURCE
@@ -101,6 +102,11 @@ def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
                 key,
                 {"name": article.get("source", ""), "seen_ids": []},
             )
+            if "baseline_boundary" not in source:
+                timestamps = [float(item.get("published_ts") or 0) for item in articles
+                              if source_key(item) == key and item.get("published_ts") and not item.get("pinned")]
+                source["baseline_boundary"] = min(timestamps) if timestamps else 0
+                source["followed_at"] = now
             current_id = article_id(article)
             seen_ids = [
                 item for item in source.get("seen_ids", []) if item != current_id
@@ -111,5 +117,14 @@ def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
             source["updated_at"] = now
 
         latest["updated_at"] = now
+        from . import update_history
+        if STATE_PATH.parent == update_history.DATA_PATH.parent and update_history.uses_sqlite():
+            database = update_history.database()
+            database.initialize()
+            with database.connection() as db, db:
+                for article in articles:
+                    db.execute("INSERT OR IGNORE INTO source_contents VALUES (?,?,?)", (article.get("platform", ""), article_id(article), str(article.get("source_uid", ""))))
+                for key, value in latest["sources"].items():
+                    database.set_metadata(db, "state:" + key, value)
         _save_state_unlocked(latest)
         return latest

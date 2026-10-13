@@ -6,8 +6,11 @@ import logging
 import os
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from pathlib import Path
+
+from src.ai_protocol import is_transient_error as _is_transient_processing_error
 
 
 def _configure_console_encoding() -> None:
@@ -123,7 +126,10 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(LOG_DIR / "scheduler.log", encoding="utf-8"),
+            RotatingFileHandler(
+                LOG_DIR / "scheduler.log", maxBytes=5 * 1024 * 1024,
+                backupCount=3, encoding="utf-8",
+            ),
             logging.StreamHandler(),
         ],
         force=True,
@@ -138,8 +144,54 @@ def write_update_report(articles: list[dict]) -> Path:
     return report_path
 
 
-def _process_and_persist(articles: list[dict]) -> list[str]:
+def _processing_retry_settings() -> tuple[int, float]:
+    config = load_config()
+    try:
+        attempts = min(3, max(0, int(config.get("retry_attempts", 1))))
+        delay = min(600.0, max(0.0, float(config.get("retry_minutes", 5)) * 60))
+    except (TypeError, ValueError, OverflowError):
+        return 1, 300.0
+    return attempts, delay
+
+
+def _enrich_with_retry(article: dict, persist_stage, retries: int | None = None, delay: float | None = None) -> None:
+    configured_retries, configured_delay = _processing_retry_settings()
+    retries = configured_retries if retries is None else min(3, max(0, retries))
+    delay = configured_delay if delay is None else min(600.0, max(0.0, delay))
+    for attempt in range(retries + 1):
+        try:
+            enrich_article(article, progress_callback=persist_stage)
+            article.pop("ai_error", None)
+            return
+        except Exception as exc:
+            if attempt >= retries or not _is_transient_processing_error(exc):
+                raise
+            persist_stage("waiting")
+            logging.warning(
+                "单条简报临时失败，将在 %.0f 秒后重试（%s/%s）：%s / %s",
+                delay, attempt + 1, retries,
+                article.get("source", "未知来源"), article.get("title", "无标题"),
+            )
+            time.sleep(delay)
+
+
+def _process_and_persist(
+    articles: list[dict], *, retry_attempts: int | None = None,
+    retry_delay_seconds: float | None = None,
+) -> list[str]:
     """处理AI简报，并在成功或失败后立即保存状态。"""
+    from src import update_history as history_store
+    if history_store.uses_sqlite():
+        from src.task_worker import submit_articles, ensure_worker
+        from src.task_queue import next_due
+        configured_retries, configured_delay = _processing_retry_settings()
+        _, jobs = submit_articles(
+            articles, max_attempts=1 + (configured_retries if retry_attempts is None else retry_attempts),
+            retry_delay=configured_delay if retry_delay_seconds is None else retry_delay_seconds,
+        )
+        if not jobs and next_due() is not None:
+            ensure_worker()
+        return []
     errors = []
     for article in articles:
         if not needs_ai_summary(article):
@@ -159,7 +211,7 @@ def _process_and_persist(articles: list[dict]) -> list[str]:
 
         started_at = time.perf_counter()
         try:
-            enrich_article(article, progress_callback=persist_stage)
+            _enrich_with_retry(article, persist_stage, retry_attempts, retry_delay_seconds)
         except Exception as exc:
             article["ai_status"] = "error"
             article["ai_error"] = str(exc)
@@ -206,7 +258,13 @@ def _process_and_persist(articles: list[dict]) -> list[str]:
 def _pending_updates(limit: int = 5) -> list[dict]:
     """找出上次被中断、尚未完成简报的视频或知乎长内容。"""
     pending = []
-    for item in list_updates(limit=1000):
+    if limit <= 0:
+        return pending
+    history = list_updates(limit=None)
+    # History is stored with recently touched items first. Resume the oldest
+    # unfinished work first so repeated new arrivals cannot starve it.
+    history.sort(key=lambda item: str(item.get("detected_at") or ""))
+    for item in history:
         if item.get("is_baseline"):
             continue
         if item.get("ai_status") not in {"", "pending", "processing"}:
@@ -221,7 +279,12 @@ def _pending_updates(limit: int = 5) -> list[dict]:
     return pending
 
 
-def run_once(initialize: bool = False) -> int:
+def run_once(
+    initialize: bool = False, *, processing_retry_attempts: int | None = None,
+    processing_retry_delay_seconds: float | None = None,
+) -> int:
+    from src.update_history import sync_history_from_summary_cache
+    sync_history_from_summary_cache()
     articles, fetch_errors = fetch_metadata()
     source_counts: dict[str, int] = {}
     for article in articles:
@@ -245,12 +308,17 @@ def run_once(initialize: bool = False) -> int:
     if initialize:
         preview_count = _record_first_detection_previews(articles)
         mark_seen(articles, load_state())
+        from src import update_history as history_store
+        if history_store.uses_sqlite():
+            from src.collection_state import acknowledge_scans
+            acknowledge_scans(load_state())
+            _process_and_persist(list_updates(limit=None))
         initialize_message = (
             f"初始化完成，已将每个来源最近内容设为基准，详情页展示 {preview_count} 条"
         )
         if partial_failure:
             initialize_message += f"；{partial_failure}"
-        WindowsNotifier.notify(
+        _safe_error_notification(
             "赛博情报局定时更新已启用",
             initialize_message + "。之后只提醒新内容。",
         )
@@ -268,6 +336,7 @@ def run_once(initialize: bool = False) -> int:
         source_key(article)
         for article in articles
         if source_key(article) not in state.get("sources", {})
+        or (article.get("is_baseline") and not state.get("sources", {}).get(source_key(article), {}).get("seen_ids"))
     }
     if missing_source_keys:
         baseline_articles = [
@@ -283,16 +352,44 @@ def run_once(initialize: bool = False) -> int:
         )
         state = load_state()
     new_articles = get_new_articles(articles, state)
+    new_keys = {(item.get("platform", ""), str(item.get("article_id") or item.get("video_id") or "")) for item in new_articles}
+    pending = [item for item in _pending_updates() if (item.get("platform", ""), str(item.get("article_id", ""))) not in new_keys]
+    from src import update_history as history_store
+    if history_store.uses_sqlite():
+        for item in new_articles:
+            item["ai_status"] = "pending" if needs_ai_summary(item) else "not_applicable"
+            item["ai_stage"] = "waiting" if needs_ai_summary(item) else "completed"
+        if new_articles:
+            record_updates(new_articles)
+            mark_seen(new_articles, state)
+            write_update_report(new_articles)
+        from src.collection_state import acknowledge_scans
+        acknowledge_scans(load_state())
+        # Include unfinished baseline work as well, and do not limit queue recovery
+        # to the latest 1000 content rows or five recent items.
+        waiting = [dict(item, summary=item.get("description", "")) for item in list_updates(limit=None)
+                   if needs_ai_summary(item) and item.get("ai_status") in {"", "pending", "processing"}]
+        _process_and_persist(waiting, retry_attempts=processing_retry_attempts,
+                             retry_delay_seconds=processing_retry_delay_seconds)
+        message = f"检查完成，发现 {len(new_articles)} 条新内容；{len(waiting)} 条简报由后台队列处理"
+        if partial_failure:
+            message += f"；{partial_failure}"
+        record_check("warning" if partial_failure else "success", len(articles), len(new_articles), message)
+        if new_articles:
+            _safe_error_notification("赛博情报局发现新内容", message)
+        return len(new_articles)
     if not new_articles:
         logging.info("新增内容判断：0 条；本次不发送桌面通知")
-        pending = _pending_updates()
         if pending:
             logging.info(
                 "发现 %s 条上次未完成的AI简报，继续处理：%s",
                 len(pending),
                 "；".join(item.get("title", "无标题") for item in pending),
             )
-            processing_errors = _process_and_persist(pending)
+            processing_errors = _process_and_persist(
+                pending, retry_attempts=processing_retry_attempts,
+                retry_delay_seconds=processing_retry_delay_seconds,
+            )
             if processing_errors:
                 error_message = "；".join(processing_errors)
                 if partial_failure:
@@ -352,7 +449,12 @@ def run_once(initialize: bool = False) -> int:
     ]
     if bilibili_articles:
         logging.info("开始读取B站字幕或转写音频，并生成AI摘要")
-    processing_errors = _process_and_persist(new_articles)
+    if pending:
+        logging.info("同时恢复 %s 条旧的待处理简报", len(pending))
+    processing_errors = _process_and_persist(
+        pending + new_articles, retry_attempts=processing_retry_attempts,
+        retry_delay_seconds=processing_retry_delay_seconds,
+    )
     if processing_errors:
         error_message = "；".join(processing_errors)
         if partial_failure:
@@ -368,17 +470,19 @@ def run_once(initialize: bool = False) -> int:
         logging.info("更新处理完成，AI简报已写入 %s", report_path)
         completion_message = (
             f"发现 {len(new_articles)} 条更新，内容简报已生成。"
-            f"来源：{'、'.join(sources)}。"
+            + (f"另完成 {len(pending)} 条旧的待处理简报。" if pending else "")
+            + f"来源：{'、'.join(sources)}。"
         )
         if partial_failure:
             completion_message += f" {partial_failure}。"
-        WindowsNotifier.notify("赛博情报局简报生成完成", completion_message)
-        logging.info("Windows桌面完成通知发送成功：%s", completion_message)
+        _safe_error_notification("赛博情报局简报生成完成", completion_message)
+        logging.info("更新处理完成：%s", completion_message)
         record_check(
             "warning" if partial_failure else "success",
             len(articles),
             len(new_articles),
             f"更新处理完成，{len(new_articles)} 条内容简报已生成"
+            + (f"；另完成 {len(pending)} 条旧的待处理简报" if pending else "")
             + (f"；{partial_failure}" if partial_failure else ""),
         )
     return len(new_articles)
@@ -388,7 +492,7 @@ def _safe_error_notification(title: str, message: str) -> None:
     try:
         WindowsNotifier.notify(title, message)
     except Exception:
-        logging.exception("错误通知发送失败")
+        logging.exception("桌面通知发送失败")
 
 
 def run_with_retry(
@@ -399,12 +503,20 @@ def run_with_retry(
     total_attempts = max(1, retry_attempts + 1)
     for attempt in range(total_attempts):
         try:
-            run_once(initialize=initialize)
+            run_once(
+                initialize=initialize, processing_retry_attempts=retry_attempts,
+                processing_retry_delay_seconds=retry_delay_seconds,
+            )
             return 0
         except Exception as exc:
             logging.exception("自动更新第 %s 次执行失败", attempt + 1)
             short_error = str(exc)[:300]
-            record_check("error", None, None, short_error)
+            try:
+                record_check("error", None, None, short_error)
+            except Exception:
+                # A corrupt or unwritable history must not suppress the retry
+                # and notification for the original failure.
+                logging.exception("保存检查失败记录时出错")
             if attempt < total_attempts - 1:
                 minutes = max(1, round(retry_delay_seconds / 60))
                 _safe_error_notification(
@@ -446,6 +558,8 @@ def main() -> int:
             logging.info("桌面通知测试成功")
             return 0
 
+        from src.update_history import initialize_storage
+        initialize_storage("sqlite")
         config = load_config()
         retry_attempts = 0 if args.no_retry else int(config["retry_attempts"])
         retry_delay_seconds = (

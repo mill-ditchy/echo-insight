@@ -1,7 +1,6 @@
 """信息源管理器 — 用户不需要知道 RSS、不需要碰 JSON 文件。"""
 
 import json
-import os
 import re
 import threading
 from datetime import datetime
@@ -10,6 +9,7 @@ from urllib.parse import urlparse
 
 from .platforms.registry import PLATFORMS, get_all_platforms
 from .storage_lock import interprocess_lock
+from .storage import atomic_json
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "sources.json"
 _ZHIHU_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -33,15 +33,7 @@ def _load() -> dict:
 
 
 def _save(data: dict):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = CONFIG_PATH.with_name(
-        f"{CONFIG_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    temp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(CONFIG_PATH)
+    atomic_json(CONFIG_PATH, data)
 
 
 # ========== 公开接口 ==========

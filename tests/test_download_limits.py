@@ -1,5 +1,6 @@
 import io
 import unittest
+from unittest.mock import patch
 
 from src.platforms.bilibili_audio import copy_response_with_limit
 
@@ -13,6 +14,29 @@ class FakeResponse(io.BytesIO):
 
 
 class DownloadLimitTests(unittest.TestCase):
+    def test_invalid_and_negative_content_length_are_rejected(self) -> None:
+        for length in ("invalid", "-1"):
+            with self.subTest(length=length), self.assertRaisesRegex(RuntimeError, "长度无效"):
+                copy_response_with_limit(FakeResponse(b"data", length), io.BytesIO(), 10, "视频")
+
+    def test_empty_and_mismatched_downloads_are_not_accepted(self) -> None:
+        for data, length in ((b"", None), (b"", "0"), (b"long", "2")):
+            with self.subTest(data=data, length=length), self.assertRaises(RuntimeError):
+                copy_response_with_limit(FakeResponse(data, length), io.BytesIO(), 10, "视频")
+
+    def test_deadline_is_checked_after_blocking_read(self) -> None:
+        output = io.BytesIO()
+        with patch("src.security.downloads.time.monotonic", side_effect=[1, 3]):
+            with self.assertRaisesRegex(RuntimeError, "时间上限"):
+                copy_response_with_limit(FakeResponse(b"data"), output, 10, "视频", deadline=2)
+        self.assertEqual(output.getvalue(), b"")
+
+    def test_complete_response_is_copied(self) -> None:
+        for length in (None, "4"):
+            output = io.BytesIO()
+            self.assertEqual(copy_response_with_limit(FakeResponse(b"data", length), output, 10, "视频"), 4)
+            self.assertEqual(output.getvalue(), b"data")
+
     def test_rejects_declared_oversized_download_before_writing(self) -> None:
         output = io.BytesIO()
 

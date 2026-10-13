@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 from ..security.network import open_bilibili_request as urlopen, normalize_bilibili_download_url
+from ..security.downloads import copy_response_with_limit
 
 from .bilibili import _HEADERS, _get_configured_cookie
 from .bilibili_subtitle import BilibiliSubtitleFetcher
@@ -34,36 +35,6 @@ def trusted_stream_urls(streams: list[dict]) -> list[str]:
             if url not in urls:
                 urls.append(url)
     return urls
-
-
-def copy_response_with_limit(response, output, max_bytes: int, label: str) -> int:
-    """Stream a response to disk while enforcing a hard size limit."""
-    content_length = response.headers.get("Content-Length")
-    declared_size = 0
-    if content_length:
-        try:
-            declared_size = int(content_length)
-        except (TypeError, ValueError):
-            declared_size = 0
-        if declared_size > max_bytes:
-            raise RuntimeError(
-                f"{label}文件过大（约 {declared_size / 1024 / 1024:.0f} MB），"
-                f"已超过 {max_bytes / 1024 / 1024:.0f} MB 安全上限"
-            )
-
-    total = 0
-    while True:
-        chunk = response.read(1024 * 1024)
-        if not chunk:
-            if declared_size > 0 and total < declared_size:
-                raise RuntimeError(f"{label}下载不完整，请重试备用地址")
-            return total
-        total += len(chunk)
-        if total > max_bytes:
-            raise RuntimeError(
-                f"{label}下载超过 {max_bytes / 1024 / 1024:.0f} MB 安全上限，已停止"
-            )
-        output.write(chunk)
 
 
 @dataclass

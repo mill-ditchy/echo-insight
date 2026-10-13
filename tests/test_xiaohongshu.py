@@ -12,14 +12,15 @@ import webapp
 import scheduler
 from src import source_manager, update_history
 from src.fetcher import needs_ai_summary, fetch_metadata
+from src.platforms.base import FetchResult
 from src.platforms.xiaohongshu import normalize_uid, parse_note, note_link, image_url, XiaohongshuFetcher
 from src.platforms.xiaohongshu_browser import check_access
 from src.accounts.xiaohongshu_account import save_webview_login, normalize_cookie
 from src.processors.deepseek_summarizer import DeepSeekSummarizer
-from src.processors.xiaohongshu_summary import enrich_note
+from src.processors.note_summary import enrich_note
 from src.processors import xiaohongshu_images as images
 from src.platforms import xiaohongshu_status
-from src.processors import xiaohongshu_summary
+from src.processors import note_summary as xiaohongshu_summary
 
 
 def setUpModule():
@@ -69,8 +70,8 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(item["detail_status"], "available")
         self.assertTrue(datetime.fromisoformat(item["published"]))
 
-    def test_excludes_video_unknown_type_and_other_authors(self):
-        self.assertIsNone(parse_note(raw_note(type="video"), UID))
+    def test_accepts_video_but_excludes_unknown_type_and_other_authors(self):
+        self.assertEqual(parse_note(raw_note(type="video"), UID)["content_type"], "video")
         self.assertIsNone(parse_note(raw_note(type=""), UID))
         self.assertIsNone(parse_note(raw_note(user={"userId": "a" * 24}), UID))
 
@@ -90,23 +91,24 @@ class ParsingTests(unittest.TestCase):
         self.assertNotIn("attacker", note_link(NOTE, "https://attacker.example/"))
 
     @patch("src.platforms.xiaohongshu_browser.load_profile")
-    def test_fetch_sorts_by_actual_date_excludes_video_and_deduplicates(self, browser):
+    def test_fetch_sorts_mixed_posts_by_actual_date_and_deduplicates(self, browser):
         a = raw_note(id="660000010000000001010001", time=1729000000000)
         b = raw_note(id="680000010000000001010001", time=1728000000000)
         browser.return_value = {"profile_name": "测试", "notes": [b, raw_note(type="video"), a, a]}
         result = XiaohongshuFetcher().fetch(UID, cookie_override="", profile_url=f"https://www.xiaohongshu.com/user/profile/{UID}?xsec_token=test")
-        self.assertEqual([r["note_id"] for r in result], [a["id"], b["id"]])
+        self.assertEqual([r["note_id"] for r in result], [a["id"], b["id"], NOTE])
+        self.assertEqual(result[-1]["content_type"], "video")
         self.assertIn("xsec_token=test", browser.call_args.args[2])
 
     def test_challenge_stops_even_when_page_contains_cards(self):
         for page in [{"url": "https://www.xiaohongshu.com/", "text": "安全验证"}, {"url": "https://www.xiaohongshu.com/login", "text": ""}]:
-            with patch("src.platforms.zhihu_browser._evaluate", return_value=page), self.assertRaises(RuntimeError):
+            with patch("src.platforms.browser_runtime.evaluate", return_value=page), self.assertRaises(RuntimeError):
                 check_access(Mock(events=[]))
 
     def test_blocked_http_status_is_not_no_update(self):
         url = f"https://www.xiaohongshu.com/user/profile/{UID}"
         events = [{"method": "Network.responseReceived", "params": {"type": "Document", "response": {"url": url, "status": 429}}}]
-        with patch("src.platforms.zhihu_browser._evaluate", return_value={"url": url}), self.assertRaises(RuntimeError):
+        with patch("src.platforms.browser_runtime.evaluate", return_value={"url": url}), self.assertRaises(RuntimeError):
             check_access(Mock(events=events))
 
 
@@ -138,10 +140,10 @@ class SummaryTests(unittest.TestCase):
             patch.object(DeepSeekSummarizer, "is_configured", return_value=True),
             patch.object(DeepSeekSummarizer, "_load_cache", return_value=None),
             patch.object(DeepSeekSummarizer, "_save_cache"),
-            patch("src.processors.xiaohongshu_summary.download_image", return_value=self.photo),
-            patch("src.processors.xiaohongshu_summary.read_frames", return_value=([{"timestamp": 1, "text": "安装步骤"}], "")),
+            patch("src.processors.note_summary.download_image", return_value=self.photo),
+            patch("src.processors.note_summary.read_frames", return_value=([{"timestamp": 1, "text": "安装步骤"}], "")),
             patch.object(DeepSeekSummarizer, "_call_api", return_value={"choices": [{"message": {"content": "先准备材料，再安装。[图片1][正文]"}}]}),
-            patch.object(DeepSeekSummarizer, "_load_provider_config", return_value={"api_url": "https://example.com/v1", "model": "text-model", "vision_model": "vision-model", "vision_enabled": True}),
+            patch("src.analysis_config.effective_provider_config", return_value={"api_url": "https://example.com/v1/chat/completions", "model": "text-model", "vision_model": "vision-model", "vision_enabled": True, "credential_id": ""}),
             patch.object(xiaohongshu_summary, "EVIDENCE_DIR", Path(self.temp.name) / "analysis"),
         ]
         self.mocks = [p.start() for p in self.patches]
@@ -185,7 +187,7 @@ class SummaryTests(unittest.TestCase):
         self.mocks[5].assert_not_called()
 
     def test_blank_api_result_is_failure(self):
-        self.mocks[5].return_value = {"choices": []}
+        self.mocks[5].return_value = {"choices": [{"message": {"content": ""}}]}
         with self.assertRaisesRegex(RuntimeError, "空简报"):
             enrich_note(note())
 
@@ -264,12 +266,12 @@ class StorageAndApiTests(unittest.TestCase):
             response = self.client.post("/api/sources", json={"platform": "xiaohongshu", "uid": UID}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["preview_count"], 0)
-        self.assertIn("暂无图文", response.json()["message"])
+        self.assertIn("暂无可读取作品", response.json()["message"])
         self.assertIn("xiaohongshu:" + UID, mark.call_args.args[1]["sources"])
 
     def test_verified_empty_xhs_fetch_is_not_failure(self):
         fetcher = Mock()
-        fetcher.fetch.return_value = []
+        fetcher.scan.return_value = FetchResult([], True, "end_reached")
         with patch("src.fetcher.list_sources", return_value=[{"platform": "xiaohongshu", "uid": UID, "name": "视频博主"}]), patch("src.fetcher.get_fetcher", return_value=fetcher):
             articles, errors = fetch_metadata()
         self.assertEqual(articles, [])
@@ -305,7 +307,7 @@ class StorageAndApiTests(unittest.TestCase):
         self.assertEqual(saved["images"], [PHOTO])
         self.assertEqual(saved["ai_completeness"], "complete")
         self.assertTrue(needs_ai_summary(item))
-        self.assertFalse(needs_ai_summary({"platform": "xiaohongshu", "content_type": "video"}))
+        self.assertTrue(needs_ai_summary({"platform": "xiaohongshu", "content_type": "video"}))
 
 
 class DownloadTests(unittest.TestCase):

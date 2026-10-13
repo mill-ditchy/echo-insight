@@ -2,35 +2,44 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#f5f7fb">
   <title>赛博情报局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261012-douyin">
+  <link rel="stylesheet" href="/static/styles.css?v=20261012-android-layout">
+  <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
+  <link rel="stylesheet" href="/static/settings.css?v=20261012-settings-pages">
+  <!-- companion-styles -->
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" aria-label="主导航">
       <div class="brand">
-        <div class="brand-mark">⟡</div>
+        <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 19 5"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg></div>
         <div class="brand-copy"><strong>赛博情报局</strong><span>个人情报工作台</span></div>
-        <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧边栏" title="收起侧边栏">‹</button>
       </div>
-      <nav class="nav-list">
-        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◈</span><span class="nav-label">最新消息</span></button>
-        <button class="nav-item" data-view="sources"><span class="nav-icon">◎</span><span class="nav-label">关注列表</span></button>
-        <button class="nav-item" data-view="accounts"><span class="nav-icon">◇</span><span class="nav-label">账号管理</span></button>
-        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span class="nav-label">设置</span></button>
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧边栏" aria-expanded="true" aria-controls="primary-nav" title="收起侧边栏">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/><path class="toggle-chevron" d="m16 9-3 3 3 3"/></svg>
+        <span class="toggle-label">收起侧栏</span>
+      </button>
+      <nav class="nav-list" id="primary-nav" aria-label="页面">
+        <button class="nav-item active" data-view="dashboard" aria-label="最新消息" aria-current="page" title="最新消息"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span class="nav-label">最新消息</span><span class="mobile-nav-label">简报</span><span class="mobile-nav-badge" id="mobile-unread-badge" aria-hidden="true" hidden></span></button>
+        <button class="nav-item" data-view="sources" aria-label="关注列表" title="关注列表"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M9 3v10l3-2 3 2V3"/></svg><span class="nav-label">关注列表</span><span class="mobile-nav-label">关注</span></button>
+        <button class="nav-item" data-view="accounts" aria-label="账号管理" title="账号管理"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="nav-label">账号管理</span><span class="mobile-nav-label">账号</span></button>
+        <button class="nav-item" data-view="settings" aria-label="设置" title="设置"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7m4 0h5M4 17h2m4 0h10"/><circle cx="13" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="nav-label">设置</span><span class="mobile-nav-label">设置</span></button>
       </nav>
       <div class="sidebar-bottom">
-        <div class="connection-dot"><i></i><span class="connection-label">本地服务运行中</span></div>
-        <button class="ghost-button" id="check-now"><span aria-hidden="true">↻</span><span class="check-label">立即检查更新</span></button>
+        <div class="connection-dot" aria-label="本地服务运行中" title="本地服务运行中"><i aria-hidden="true"></i><span class="connection-label">本地服务运行中</span></div>
+        <button class="ghost-button" id="check-now" aria-label="立即检查更新" title="立即检查更新"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 3l1 3M4 12l1 3a8 8 0 0 0 13 3"/></svg><span class="check-label">立即检查更新</span></button>
       </div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
         <div>
+          <p class="mobile-eyebrow">赛博情报局</p>
           <h1 id="view-title">最新消息</h1>
         </div>
+        <button class="ghost-button mobile-check-button" id="mobile-check-now" type="button" aria-label="立即检查更新" title="立即检查更新"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 3l1 3M4 12l1 3a8 8 0 0 0 13 3"/></svg></button>
         <div class="topbar-meta">
           <span class="status-pill" id="task-status">检查状态读取中</span>
           <span class="clock" id="current-time"></span>
@@ -48,7 +57,7 @@
               <button class="primary-button" id="mark-read-dashboard">全部标记为已读</button>
             </div>
           </div>
-          <div class="hero-card">
+          <div class="hero-card last-check-card">
             <div class="hero-label">最近检查</div>
             <div class="hero-value" id="last-check-time">暂无检查记录</div>
             <p id="last-check-message">计划任务启动后会在这里显示结果</p>
@@ -81,6 +90,7 @@
           <span class="muted" id="latest-caption"></span>
         </div>
         <div class="updates-list" id="dashboard-updates"></div>
+        <button class="ghost-button history-more" id="dashboard-load-more" type="button" hidden>加载更多消息</button>
       </section>
 
       <section class="view" id="view-sources">
@@ -103,6 +113,7 @@
         </div>
         <div class="content-type-menu" id="detail-content-types" hidden></div>
         <div class="updates-list" id="source-videos"></div>
+        <button class="ghost-button history-more" id="source-load-more" type="button" hidden>加载更多历史内容</button>
       </section>
 
       <section class="view" id="view-briefing">
@@ -134,41 +145,69 @@
 
       <section class="view" id="view-accounts">
         <div class="section-heading page-heading">
-          <div><h2>账号管理</h2><p class="section-description">管理哔哩哔哩、知乎、小红书和抖音的本机登录状态。</p></div>
+          <div><h2>账号管理</h2><p class="section-description" id="accounts-description">管理哔哩哔哩、知乎、小红书和抖音的本机登录状态。</p></div>
         </div>
         <div class="account-list" id="account-list"></div>
         <div class="account-security-note">
           <strong>本地安全说明</strong>
           <p id="credential-protection">正在检查凭证保护状态…</p>
-          <p>登录凭证只用于连接对应平台，不会发送给AI模型。程序不会读取或保存登录表单中的密码。加密能防止凭证文件被直接复制后使用，但无法防住已经以你的Windows账号权限运行的恶意程序。</p>
+          <p id="account-storage-description">登录凭证只用于连接对应平台，不会发送给AI模型。程序不会读取或保存登录表单中的密码。加密能防止凭证文件被直接复制后使用，但无法防住已经以你的Windows账号权限运行的恶意程序。</p>
         </div>
       </section>
 
       <section class="view" id="view-settings">
-        <div class="section-heading page-heading">
-          <div><h2>设置</h2><p class="section-description">调整自动检查节奏，并查看历史运行记录。</p></div>
+        <div id="settings-index">
+          <p class="settings-intro">选择一项设置，专注调整你需要的内容。</p>
+          <nav class="settings-index-grid" aria-label="设置分类">
+            <button class="settings-entry" type="button" data-settings-page="tasks"><span class="settings-entry-icon" aria-hidden="true">↻</span><span><strong>后台任务</strong><small>查看分析进度、设置每日预算与清理缓存</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="ai"><span class="settings-entry-icon" aria-hidden="true">✦</span><span><strong>AI 接入</strong><small>连接 AI 服务，选择模型并测试连接</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="display"><span class="settings-entry-icon" aria-hidden="true">Aa</span><span><strong>字体与阅读</strong><small>调整界面和简报正文的文字大小</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="schedule"><span class="settings-entry-icon" aria-hidden="true">◷</span><span><strong>自动检查</strong><small>设置关注内容的检查间隔</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="video"><span class="settings-entry-icon" aria-hidden="true">▷</span><span><strong>视频理解</strong><small>调整画面采样、文字识别与分析方式</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="knowledge"><span class="settings-entry-icon" aria-hidden="true">▤</span><span><strong>人物与作品资料</strong><small>管理角色参考图和作品资料</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="history"><span class="settings-entry-icon" aria-hidden="true">≡</span><span><strong>检查历史</strong><small>查看最近的运行结果与异常记录</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+          </nav>
         </div>
-        <div class="settings-layout">
-          <div class="panel settings-panel display-settings-panel">
+        <div id="settings-detail" hidden>
+          <button class="back-button" id="back-to-settings" type="button">← 全部设置</button>
+          <div class="settings-layout">
+          <div class="panel display-settings-panel" data-settings-panel="tasks" hidden>
+            <div class="panel-title"><h3 tabindex="-1">后台任务</h3><button class="text-button" id="refresh-tasks" type="button">刷新状态</button></div>
+            <p class="setting-help">查看内容分析进度，控制每天的处理量。</p>
+            <div class="task-count-grid" id="task-counts" role="status" aria-live="polite">正在读取任务状态…</div>
+            <h4 class="settings-section-title">每日分析预算</h4>
+            <form id="task-budget-form" class="api-key-form">
+              <label for="task-daily-budget">每日分析次数上限</label>
+              <div class="ai-connection-actions"><input id="task-daily-budget" type="number" min="0" max="10000" value="0" required><button class="ghost-button" type="submit">保存分析预算</button></div>
+              <p class="ai-field-help">填 0 表示不限次数，重试也计入预算。</p>
+              <p class="setting-help" id="task-budget-status">单次分析可能包含多次模型请求。</p>
+            </form>
+            <h4 class="settings-section-title">任务列表</h4>
+            <div class="history-list" id="task-list"></div>
+            <h4 class="settings-section-title">媒体缓存</h4>
+            <div class="ai-connection-actions"><button class="ghost-button" id="preview-cache" type="button">查看可清理媒体</button><button class="ghost-button" id="cleanup-cache" type="button" hidden>清理超过30天的原始媒体</button></div>
+            <p class="setting-help" id="cache-preview-status">成功简报与分析依据会保留。</p>
+          </div>
+          <div class="panel settings-panel display-settings-panel" data-settings-panel="display" hidden>
             <div class="panel-title"><h3>字体大小</h3><span>即时生效</span></div>
-            <p class="setting-help">分别调整应用界面和简报正文，选择会保存在当前电脑。</p>
+            <p class="setting-help">分别调整应用界面和简报正文，选择会保存在当前设备。</p>
             <div class="font-settings">
               <label class="font-setting" for="interface-font-size">
-                <span class="font-setting-heading"><strong>界面字体</strong><output id="interface-font-size-value">14 像素</output></span>
-                <input id="interface-font-size" type="range" min="13" max="18" step="1" value="14">
+                <span class="font-setting-heading"><strong>界面字体</strong><output id="interface-font-size-value">15 像素</output></span>
+                <input id="interface-font-size" type="range" min="13" max="18" step="1" value="15">
                 <span class="font-scale"><span>较小</span><span>较大</span></span>
               </label>
               <label class="font-setting" for="briefing-font-size">
-                <span class="font-setting-heading"><strong>简报正文字体</strong><output id="briefing-font-size-value">14 像素</output></span>
-                <input id="briefing-font-size" type="range" min="13" max="22" step="1" value="14">
+                <span class="font-setting-heading"><strong>简报正文字体</strong><output id="briefing-font-size-value">16 像素</output></span>
+                <input id="briefing-font-size" type="range" min="13" max="22" step="1" value="16">
                 <span class="font-scale"><span>较小</span><span>较大</span></span>
               </label>
             </div>
             <button class="text-button reset-font-button" id="reset-font-settings" type="button">恢复默认大小</button>
           </div>
-          <div class="panel settings-panel ai-settings-panel">
+          <div class="panel settings-panel ai-settings-panel" data-settings-panel="ai" hidden>
             <div class="panel-title"><h3>AI 接入</h3><span>自定义服务与模型</span></div>
-            <p class="setting-help">支持兼容 Chat Completions 的服务。填写服务商提供的接口地址、API Key 和模型名称即可接入。</p>
+            <p class="setting-help">填写服务地址和模型，测试连接后保存。支持兼容 Chat Completions 的服务。</p>
             <p class="setting-help" id="ai-key-status">正在读取 AI 设置…</p>
             <form class="api-key-form" id="api-key-form">
               <div class="ai-provider-fields">
@@ -184,7 +223,8 @@
                 </div>
                 <div>
                   <label for="api-key-input">API Key</label>
-                  <input id="api-key-input" type="password" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="已保存时留空可保留；切换 URL 时请填写新 Key">
+                  <input id="api-key-input" type="password" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="输入 API Key，或留空保留">
+                  <p class="ai-field-help">切换服务地址时，需要填写新服务的 Key。</p>
                 </div>
               </div>
               <div class="ai-connection-actions">
@@ -193,7 +233,9 @@
               </div>
               <p class="ai-field-help">测试会发送少量文字；启用画面分析时还会测试图片输入，可能消耗少量额度。测试不保存设置。已保存的 Key 留空也可测试。</p>
               <div class="setting-result" id="ai-test-result" role="status" aria-live="polite"></div>
-              <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用图片与视频画面分析（需要支持图片输入的模型）</label>
+              <h4 class="settings-section-title">图片与视频画面</h4>
+              <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用画面分析</label>
+              <p class="ai-field-help">需要使用支持图片输入的模型。</p>
               <div id="ai-vision-model-field" hidden>
                 <label for="ai-vision-model">视觉模型名称（可选）</label>
                 <input id="ai-vision-model" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="留空则使用文字模型">
@@ -203,7 +245,7 @@
               <div class="setting-result" id="api-key-result"></div>
             </form>
           </div>
-          <div class="panel settings-panel">
+          <div class="panel settings-panel" data-settings-panel="video" hidden>
             <div class="panel-title"><h3>视频理解</h3><span>动漫、游戏与其他视频</span></div>
             <p class="setting-help">分段观察画面、读取屏幕文字，再核对作品和角色资料。分段分析会增加模型调用次数，结果会缓存。</p>
             <form id="video-analysis-form" class="api-key-form">
@@ -222,8 +264,8 @@
               <button class="primary-button" type="submit">保存视频理解设置</button><div class="setting-result" id="video-analysis-result"></div>
             </form>
           </div>
-          <div class="panel settings-panel">
-            <div class="panel-title"><h3>人物原型图库与多作品资料</h3><span>支持持续补充</span></div>
+          <div class="panel settings-panel" data-settings-panel="knowledge" hidden>
+            <div class="panel-title"><h3>人物与作品资料</h3><span>支持持续补充</span></div>
             <p class="setting-help">添加带姓名、所属作品、形象版本与来源的角色参考图。系统会按视频中的人物截图检索并核对原型，也支持不同动漫、游戏和原创角色。</p>
             <div id="media-knowledge-list"></div>
             <form id="media-knowledge-form" class="api-key-form">
@@ -238,28 +280,29 @@
               <button class="primary-button" type="submit">添加资料</button><div class="setting-result" id="media-knowledge-result"></div>
             </form>
           </div>
-          <div class="panel settings-panel">
-            <div class="panel-title"><h3>自动检查间隔</h3><span>后台任务</span></div>
+          <div class="panel settings-panel" data-settings-panel="schedule" hidden>
+            <div class="panel-title"><h3>自动检查</h3><span>检查间隔</span></div>
             <p class="setting-help">修改后会同步更新Windows计划任务。</p>
             <div class="interval-options" id="interval-options"></div>
             <div class="setting-result" id="interval-result"></div>
           </div>
-          <div class="panel settings-panel">
+          <div class="panel settings-panel" data-settings-panel="history" hidden>
             <div class="panel-title"><h3>检查历史</h3><span>最近100次</span></div>
             <div class="history-list" id="check-history"></div>
           </div>
+        </div>
         </div>
       </section>
     </main>
   </div>
 
   <div class="modal-backdrop" id="source-modal" hidden>
-    <div class="modal">
-      <button class="modal-close" id="close-source-modal">×</button>
-      <h2>添加关注</h2>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title">
+      <button class="modal-close" id="close-source-modal" type="button" aria-label="关闭添加关注">×</button>
+      <h2 id="source-modal-title" tabindex="-1">添加关注</h2>
       <p class="section-description">添加后会读取最近3条内容用于详情页展示，但不会把它们计入未读更新。</p>
       <form id="source-form">
-        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option><option value="xiaohongshu">小红书（图文）</option><option value="douyin">抖音（视频与图文）</option></select></label>
+        <label><span class="form-label">平台</span><select id="source-platform"><option value="bilibili">哔哩哔哩</option><option value="zhihu">知乎</option><option value="xiaohongshu">小红书（视频与图文）</option><option value="douyin">抖音（视频与图文）</option></select></label>
         <label><span class="form-label" id="source-id-label">账号编号</span><input id="source-uid" inputmode="numeric" placeholder="例如：21131684" required></label>
         <label id="zhihu-cookie-field" hidden><span class="form-label">手动填写知乎 Cookie（备用）</span><textarea id="source-cookie" rows="3" placeholder="建议先在账号管理中登录；也可在这里粘贴 Cookie"></textarea></label>
         <label><span class="form-label">备注名称（可选）</span><input id="source-name" placeholder="不填写则使用博主名称"></label>
@@ -327,6 +370,7 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=20261012-douyin"></script>
+  <!-- companion-scripts -->
+  <script src="/static/app.js?v=20261012-settings-pages"></script>
 </body>
 </html>

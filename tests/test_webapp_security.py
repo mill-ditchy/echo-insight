@@ -10,6 +10,23 @@ class LocalApiSecurityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(webapp.app)
 
+    def test_failed_baseline_write_does_not_advance_seen_state(self) -> None:
+        fetcher = Mock()
+        fetcher.fetch.return_value = [{"article_id": "BV1test", "title": "测试", "link": "https://www.bilibili.com/video/BV1test"}]
+        with (
+            patch.object(webapp, "get_source", return_value=None),
+            patch.object(webapp, "get_fetcher", return_value=fetcher),
+            patch.object(webapp, "add_source", return_value=True),
+            patch.object(webapp, "load_state", return_value={"sources": {}}),
+            patch.object(webapp, "record_baseline_preview", side_effect=OSError("disk full")),
+            patch.object(webapp, "mark_seen") as mark_seen,
+            patch.object(webapp, "_start_baseline_processing") as start,
+        ):
+            with self.assertRaises(OSError):
+                webapp.create_source(webapp.SourceCreate(platform="bilibili", uid="100"))
+        mark_seen.assert_not_called()
+        start.assert_not_called()
+
     def test_api_rejects_requests_without_application_header(self) -> None:
         response = self.client.get("/api/sources")
 

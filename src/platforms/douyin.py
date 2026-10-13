@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from .base import PlatformFetcher
+from .base import PlatformFetcher, FetchResult
 from ..security.network import validate_https_url
 from ..security.secret_store import load_secret
 
@@ -92,10 +92,18 @@ class DouyinFetcher(PlatformFetcher):
     def fetch(self, uid, cookie_override=None, profile_url=""):
         return self.read_profile(uid, cookie_override, profile_url)["articles"]
 
-    def fetch_incremental(self, uid, seen_ids):
-        return self.read_profile(uid, seen_ids=seen_ids)["articles"]
+    def scan(self, uid, context):
+        profile = self.read_profile(uid, seen_ids=None if context.initial else context.seen_ids,
+                                    baseline_boundary=context.baseline_boundary)
+        warning = profile.get("scan_warning", "")
+        return FetchResult(profile["articles"], not bool(warning),
+                           "baseline" if context.initial else "range_unconfirmed" if warning else "visible_window",
+                           warning=warning)
 
-    def read_profile(self, uid, cookie_override=None, profile_url="", *, seen_ids=None):
+    def fetch_incremental(self, uid, seen_ids, baseline_boundary=0):
+        return self.read_profile(uid, seen_ids=seen_ids, baseline_boundary=baseline_boundary)["articles"]
+
+    def read_profile(self, uid, cookie_override=None, profile_url="", *, seen_ids=None, baseline_boundary=0):
         from .douyin_browser import load_profile
         from .douyin_status import record_result
         uid = normalize_uid(uid)
@@ -110,12 +118,15 @@ class DouyinFetcher(PlatformFetcher):
                 articles = articles[:3]
             else:
                 seen = set(seen_ids)
-                anchors = [i for i, a in enumerate(articles) if a["article_id"] in seen and not a["pinned"]]
-                if anchors:
-                    articles = articles[:min(anchors) + 1]
+                if baseline_boundary:
+                    articles = [a for a in articles if a["published_ts"] >= baseline_boundary]
+                else:
+                    anchors = [i for i, a in enumerate(articles) if a["article_id"] in seen and not a["pinned"]]
+                    if anchors:
+                        articles = articles[:min(anchors) + 1]
                 articles = [a for a in articles if a["article_id"] not in seen]
             record_result(uid, count=len(articles), warning=result.get("scan_warning", ""))
-            return {"articles": articles, "profile_name": result["profile_name"], "empty_confirmed": result.get("empty_confirmed", False)}
+            return {"articles": articles, "profile_name": result["profile_name"], "empty_confirmed": result.get("empty_confirmed", False), "scan_warning": result.get("scan_warning", "")}
         except Exception as exc:
             record_result(uid, error=exc)
             raise

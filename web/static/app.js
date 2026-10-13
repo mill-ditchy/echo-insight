@@ -1,8 +1,8 @@
-const state = { currentView: "dashboard", dashboard: null, sources: [], sourcesStage: "platforms", selectedPlatform: null, sourceContentType: null, sourceDetailData: null, qrKey: null, qrTimer: null, sourceTimer: null, dashboardTimer: null, sourcePlatform: null, sourceUid: null, sourceName: null, unreadPanelOpen: false, briefingBack: "dashboard", briefingItem: null };
+const state = { currentView: "dashboard", dashboard: null, dashboardRequestId: 0, sources: [], sourcesStage: "platforms", selectedPlatform: null, sourceContentType: null, sourceDetailData: null, sourceRequestId: 0, sourceRequestTarget: null, deleteSourceTarget: null, qrKey: null, qrTimer: null, sourceTimer: null, dashboardTimer: null, sourcePlatform: null, sourceUid: null, sourceName: null, unreadPanelOpen: false, briefingBack: "dashboard", briefingItem: null };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const FONT_DEFAULTS = { interfaceSize: 14, briefingSize: 14 };
+const FONT_DEFAULTS = { interfaceSize: 15, briefingSize: 16 };
 const FONT_STORAGE_KEYS = {
   interfaceSize: "cyber-intel-interface-font-size",
   briefingSize: "cyber-intel-briefing-font-size",
@@ -45,7 +45,81 @@ function initializeFontSettings() {
   applyFontSizes(interfaceSize, briefingSize);
 }
 
+function setSidebarCollapsed(collapsed, persist = false) {
+  $(".app-shell").classList.toggle("sidebar-collapsed", collapsed);
+  const toggle = $("#sidebar-toggle");
+  const expanded = window.matchMedia("(max-width: 900px)").matches || !collapsed;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-label", expanded ? "收起侧边栏" : "展开侧边栏");
+  toggle.title = expanded ? "收起侧边栏" : "展开侧边栏";
+  if (persist) {
+    try { localStorage.setItem("cyber-intel-sidebar-collapsed", String(collapsed)); }
+    catch (_error) { /* 无法保存时，收起操作仍在当前窗口生效。 */ }
+  }
+}
+
+function initializeSidebar() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem("cyber-intel-sidebar-collapsed") === "true"; }
+  catch (_error) { /* 使用默认展开状态。 */ }
+  setSidebarCollapsed(collapsed);
+  window.matchMedia("(max-width: 900px)").addEventListener("change", () => {
+    setSidebarCollapsed($(".app-shell").classList.contains("sidebar-collapsed"));
+  });
+}
+
+function initializeDialogs() {
+  const backdrops = $$(".modal-backdrop");
+  let returnFocus = null;
+  let activeBackdrop = null;
+  backdrops.forEach((backdrop) => {
+    const dialog = backdrop.querySelector(".modal");
+    const heading = dialog.querySelector("h2");
+    if (!heading.id) heading.id = `${backdrop.id}-title`;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", heading.id);
+    backdrop.querySelector(".modal-close")?.setAttribute("aria-label", "关闭弹窗");
+  });
+  document.addEventListener("focusin", (event) => {
+    if (!event.target.closest(".modal-backdrop")) returnFocus = event.target;
+  });
+  const update = () => {
+    const previous = activeBackdrop;
+    activeBackdrop = backdrops.find((backdrop) => !backdrop.hidden) || null;
+    document.body.classList.toggle("modal-open", Boolean(activeBackdrop));
+    if (previous && !activeBackdrop && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    if (activeBackdrop && !activeBackdrop.contains(document.activeElement)) {
+      activeBackdrop.querySelector(".modal-close")?.focus({ preventScroll: true });
+    }
+  };
+  const observer = new MutationObserver(update);
+  backdrops.forEach((backdrop) => observer.observe(backdrop, { attributes: true, attributeFilter: ["hidden"] }));
+  document.addEventListener("keydown", (event) => {
+    if (!activeBackdrop) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      activeBackdrop.querySelector(".modal-close")?.click();
+    } else if (event.key === "Tab") {
+      const focusable = [...activeBackdrop.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')]
+        .filter((element) => !element.disabled && element.getClientRects().length);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
+  update();
+}
+
+function renderUnreadCount(count) {
+  $("#unread-count").textContent = count;
+  const badge = $("#mobile-unread-badge");
+  badge.hidden = !count;
+  badge.textContent = count > 99 ? "99+" : String(count);
+}
+
 async function api(path, options = {}) {
+  if (typeof window !== "undefined" && window.CyberHost?.request) return window.CyberHost.request(path, options);
   const response = await fetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", "X-Cyber-Request": "1", ...(options.headers || {}) },
@@ -96,7 +170,7 @@ function updateKey(item) {
 }
 
 function isImageNote(item) {
-  return item.platform === "xiaohongshu" || (item.platform === "douyin" && item.content_type === "image_note");
+  return ["xiaohongshu", "douyin"].includes(item.platform) && item.content_type === "image_note";
 }
 
 function noteSummaryText(value) {
@@ -105,6 +179,7 @@ function noteSummaryText(value) {
 }
 
 function summaryText(item) {
+  if (item.ai_status === "cancelled") return "分析已取消。需要时可重新分析。";
   if (isImageNote(item)) {
     if (item.ai_summary) return noteSummaryText(item.ai_summary);
     if (item.ai_status === "error") return `图文简报生成失败：${item.ai_error || "请重试"}`;
@@ -134,6 +209,18 @@ function summaryText(item) {
   return summary;
 }
 
+function updateSummaryToggle(summaryElement) {
+  const card = summaryElement.closest(".update-card");
+  const button = card?.querySelector(".summary-toggle");
+  if (button && summaryElement.clientHeight) {
+    button.hidden = !card.classList.contains("expanded") && summaryElement.scrollHeight <= summaryElement.clientHeight + 1;
+  }
+}
+
+const summaryResizeObserver = typeof ResizeObserver !== "undefined"
+  ? new ResizeObserver(entries => entries.forEach(entry => updateSummaryToggle(entry.target)))
+  : null;
+
 function updateCard(item) {
   const summary = summaryText(item);
   const sourceLabel = item.is_baseline ? `${item.source} · 初始展示` : item.source;
@@ -149,14 +236,15 @@ function updateCard(item) {
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
   const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
-  const summaryToggle = String(summary).length > 180 ? `<button class="text-button summary-toggle">展开简报</button>` : "";
+  const summaryToggle = `<button class="text-button summary-toggle" hidden>展开简报</button>`;
   const originalLabel = item.platform === "douyin" ? "打开抖音原作品 ↗" : item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
   const originalUrl = safeExternalUrl(item.link);
   const originalLink = originalUrl ? `<a class="original-link" href="${escapeHtml(originalUrl)}" target="_blank" rel="noopener noreferrer">${originalLabel}</a>` : "";
   const evidenceDetails = item.platform === "bilibili" && item.ai_segment_count ? `<details class="video-evidence" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}"><summary>查看分段分析依据与资料出处</summary><div class="video-evidence-body setting-help"></div></details>` : "";
   const contentBadge = item.content_type_label ? `<span class="analysis-badge">${escapeHtml(item.content_type_label)}</span>` : "";
   return `<article class="update-card ${item.read ? "" : "unread"}" data-update-key="${escapeHtml(updateKey(item))}">
-    <div class="update-top"><h3 class="update-title"><button class="update-title-button briefing-link" type="button">${escapeHtml(item.title)}</button></h3><span class="update-source">${escapeHtml(sourceLabel)}</span></div>
+    <div class="update-top"><span class="update-source">${escapeHtml(sourceLabel)}</span><span class="unread-badge">未读</span></div>
+    <h3 class="update-title"><button class="update-title-button briefing-link" type="button">${escapeHtml(item.title)}</button></h3>
     <div class="update-meta">发布时间：${escapeHtml(item.published || "未知")} · 检测于：${escapeHtml(formatTime(item.detected_at))}</div>
     <div class="update-summary">${escapeHtml(summary)}</div>
     ${analysisWarning}
@@ -166,7 +254,12 @@ function updateCard(item) {
 }
 
 function renderUpdates(container, items, emptyText) {
+  container.querySelectorAll(".update-summary").forEach(element => summaryResizeObserver?.unobserve(element));
   container.innerHTML = items.length ? items.map(updateCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  container.querySelectorAll(".update-summary").forEach(element => {
+    updateSummaryToggle(element);
+    summaryResizeObserver?.observe(element);
+  });
   container.querySelectorAll(".reanalyze-button").forEach((button) => button.addEventListener("click", reanalyzeVideo));
   container.querySelectorAll(".video-evidence").forEach((element) => element.addEventListener("toggle", async () => {
     if (!element.open || element.dataset.loaded) return;
@@ -223,7 +316,7 @@ async function reanalyzeVideo(event) {
 function noteAnalysisButtons(item) {
   if (!item.link) return "";
   const busy = ["pending", "processing"].includes(item.last_attempt_status) || ["pending", "processing"].includes(item.ai_status);
-  if (item.platform === "douyin" && item.content_type === "video") return `<button type="button" class="text-button reanalyze-button" data-platform="douyin" data-article-id="${escapeHtml(item.article_id)}" ${busy ? "disabled" : ""}>${busy ? "正在分析视频…" : "重新分析视频"}</button>`;
+  if (["xiaohongshu", "douyin"].includes(item.platform) && item.content_type === "video") return `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" ${busy ? "disabled" : ""}>${busy ? "正在分析视频…" : "重新分析视频"}</button>`;
   if (busy) return `<button class="text-button" type="button" disabled>正在分析图文…</button>`;
   return ["quick", "full"].map(mode => `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" data-reading-mode="${mode}" ${busy ? "disabled" : ""}>${busy ? "正在分析…" : mode === "full" ? "完整分析图文" : "重新分析图文（快速）"}</button>`).join("");
 }
@@ -231,12 +324,14 @@ function noteAnalysisButtons(item) {
 async function refreshNoteBriefing() {
   const item = state.briefingItem;
   if (!item || state.currentView !== "briefing") return;
-  const data = await api(`/api/sources/${encodeURIComponent(item.platform)}/${encodeURIComponent(item.source_uid)}`);
-  if (state.currentView !== "briefing" || state.briefingItem.article_id !== item.article_id) return;
-  const updated = data.videos.find(row => row.article_id === item.article_id);
+  const data = await api(`/api/history/${encodeURIComponent(item.platform)}/${encodeURIComponent(item.article_id)}`);
+  if (state.currentView !== "briefing" || state.briefingItem !== item) return;
+  const updated = data.item;
   if (updated) { state.briefingItem = updated; renderBriefing(updated); }
   if (updated && (["pending", "processing"].includes(updated.ai_status) || updated.last_attempt_status === "processing")) {
-    setTimeout(() => refreshNoteBriefing().catch(error => showToast(error.message, true)), 5000);
+    setTimeout(() => {
+      if (state.currentView === "briefing" && state.briefingItem === updated) refreshNoteBriefing().catch(error => showToast(error.message, true));
+    }, 5000);
   }
 }
 
@@ -273,7 +368,7 @@ function syncReadCounters(result, item) {
     const source = (state.dashboard.sources || []).find((candidate) => candidate.platform === result.platform && String(candidate.uid) === String(result.source_uid));
     if (source) source.unread_count = result.source_unread_count;
   }
-  $("#unread-count").textContent = result.unread_count;
+  renderUnreadCount(result.unread_count);
   $("#latest-caption").textContent = result.unread_count ? `有 ${result.unread_count} 条内容等待查看` : "最近一次更新内容";
   renderUnreadPanel(state.dashboard?.unread_updates || []);
   $$('[data-update-key]').forEach((element) => {
@@ -330,6 +425,7 @@ function renderBriefing(item) {
 
 async function openBriefing(item) {
   if (!item.read && !(await markItemRead(item))) return;
+  state.briefingScroll = window.scrollY;
   state.briefingBack = state.currentView === "source-detail" ? "source-detail" : "dashboard";
   state.briefingItem = item;
   for (const selector of ["#briefing-note-original", "#briefing-note-evidence-details", "#briefing-note-options"]) $(selector).open = false;
@@ -342,30 +438,39 @@ async function openBriefing(item) {
 async function backFromBriefing() {
   if (state.briefingBack === "source-detail" && state.sourcePlatform && state.sourceUid) {
     const contentType = state.sourceContentType;
-    await loadSourceDetail(state.sourcePlatform, state.sourceUid);
+    if (!await loadSourceDetail(state.sourcePlatform, state.sourceUid)) return;
     if (contentType) showSourceContentType(contentType);
+    window.scrollTo({ top: state.briefingScroll || 0, behavior: "instant" });
     return;
   }
   setView("dashboard");
   await loadDashboard();
+  window.scrollTo({ top: state.briefingScroll || 0, behavior: "instant" });
 }
 
 function platformLabel(platform) {
   return ({zhihu: "知乎", bilibili: "哔哩哔哩", xiaohongshu: "小红书", douyin: "抖音"})[platform] || platform;
 }
 
+function platformIcon(platform, className) {
+  const icons = {bilibili: "bilibili", zhihu: "zhihu", douyin: "douyin", xiaohongshu: "xiaohongshu"};
+  const icon = icons[platform];
+  if (!icon) return "";
+  return `<img class="platform-icon ${escapeHtml(className)}" src="/static/icons/${icon}.jpg" alt="${escapeHtml(platformLabel(platform))}" decoding="async">`;
+}
+
 function renderPlatforms(container, sources) {
   const platforms = [
-    { key: "bilibili", label: "哔哩哔哩", mark: "B", caption: "视频与AI简报" },
-    { key: "zhihu", label: "知乎", mark: "知", caption: "回答、文章、想法与视频" },
-    { key: "douyin", label: "抖音", mark: "抖", caption: "视频、图文与AI简报" },
-    { key: "xiaohongshu", label: "小红书", mark: "红", caption: "图文笔记与AI简报" },
+    { key: "bilibili", label: "哔哩哔哩", caption: "视频与AI简报" },
+    { key: "zhihu", label: "知乎", caption: "回答、文章、想法与视频" },
+    { key: "douyin", label: "抖音", caption: "视频、图文与AI简报" },
+    { key: "xiaohongshu", label: "小红书", caption: "视频、图文与AI简报" },
   ];
   container.innerHTML = platforms.map((platform) => {
     const matched = sources.filter((source) => source.platform === platform.key);
     const unread = matched.reduce((sum, source) => sum + Number(source.unread_count || 0), 0);
     return `<button class="platform-card ${platform.key}" type="button" data-platform="${platform.key}">
-      <span class="platform-mark">${platform.mark}</span>
+      ${platformIcon(platform.key, "platform-mark")}
       <span class="platform-card-main"><strong>${platform.label}</strong><span>${platform.caption}</span></span>
       <span class="platform-card-stats"><b>${matched.length}</b> 位博主${unread ? `<em>${unread} 未读</em>` : ""}</span>
     </button>`;
@@ -375,8 +480,7 @@ function renderPlatforms(container, sources) {
 
 function renderSources(container, sources) {
   container.innerHTML = sources.length ? sources.map((source) => `<article class="source-card" data-platform="${escapeHtml(source.platform)}" data-uid="${escapeHtml(source.uid)}">
-    <div class="source-card-top"><h3 class="source-name">${escapeHtml(source.name)}</h3><span class="source-platform">${escapeHtml(source.category || "B站")}</span></div>
-    <div class="source-uid">${source.platform === "zhihu" ? "账号" : "账号编号"} · ${escapeHtml(source.uid)}</div>
+    <div class="source-card-top"><h3 class="source-name">${escapeHtml(source.name)}</h3><span class="source-platform">${platformIcon(source.platform, "source-platform-icon")}<span>${escapeHtml(source.category || platformLabel(source.platform))}</span></span></div>
     ${["xiaohongshu", "douyin"].includes(source.platform) ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
     <div class="source-stats"><div><strong>${source.new_video_count || 0}</strong>已收录内容</div><div><strong class="source-unread-count">${source.unread_count || 0}</strong>未读</div></div>
   </article>`).join("") : `<div class="empty-state">还没有关注对象，点击右上角添加第一位博主。</div>`;
@@ -384,17 +488,19 @@ function renderSources(container, sources) {
 }
 
 function showPlatformSources(platform) {
+  invalidateSourceRequests();
   state.sourcesStage = "sources";
   state.selectedPlatform = platform;
   const sources = state.sources.filter((source) => source.platform === platform);
   $("#sources-heading").textContent = platformLabel(platform);
-  $("#sources-description").textContent = platform === "douyin" ? "选择博主，查看视频与图文的文字简报。" : platform === "xiaohongshu" ? "选择博主，查看图文笔记和AI简报。" : platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
+  $("#sources-description").textContent = ["douyin", "xiaohongshu"].includes(platform) ? "选择博主，查看视频与图文的文字简报。" : platform === "zhihu" ? "选择博主后，再按回答、文章、想法等内容类型查看。" : "选择博主，查看已收录视频和AI简报。";
   $("#back-to-platforms").hidden = false;
   $("#source-list").className = "source-grid";
   renderSources($("#source-list"), sources);
 }
 
 function showPlatformPicker() {
+  invalidateSourceRequests();
   state.sourcesStage = "platforms";
   state.selectedPlatform = null;
   $("#sources-heading").textContent = "选择平台";
@@ -404,20 +510,55 @@ function showPlatformPicker() {
   renderPlatforms($("#source-list"), state.sources);
 }
 
+function showSettingsPage(page = null, focus = true) {
+  const panels = $$('[data-settings-panel]');
+  const selected = panels.find(panel => panel.dataset.settingsPanel === page);
+  if (page && !selected) return;
+  const previous = state.settingsPage;
+  state.settingsPage = page;
+  $("#settings-index").hidden = Boolean(page);
+  $("#settings-detail").hidden = !page;
+  panels.forEach(panel => { panel.hidden = panel !== selected; });
+  const heading = selected?.querySelector("h3");
+  $("#view-title").textContent = heading?.textContent || "设置";
+  if (!focus) return;
+  window.scrollTo({ top: 0, behavior: "instant" });
+  if (heading) {
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+  } else if (previous) {
+    $$('[data-settings-page]').find(button => button.dataset.settingsPage === previous)?.focus({ preventScroll: true });
+  }
+}
+
+function invalidateSourceRequests() {
+  state.sourceRequestId += 1;
+  state.sourceRequestTarget = null;
+  if (state.sourceTimer) clearTimeout(state.sourceTimer);
+  state.sourceTimer = null;
+}
+
 function setView(view) {
+  if (state.currentView !== view && window.matchMedia("(max-width: 620px)").matches) {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
   if (view !== "dashboard" && state.dashboardTimer) {
     clearTimeout(state.dashboardTimer);
     state.dashboardTimer = null;
   }
-  if (view !== "source-detail" && state.sourceTimer) {
-    clearTimeout(state.sourceTimer);
-    state.sourceTimer = null;
-  }
+  if (view !== "source-detail") invalidateSourceRequests();
   state.currentView = view;
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
-  $$(".nav-item").forEach((element) => element.classList.toggle("active", element.dataset.view === view));
+  const navView = view === "source-detail" ? "sources" : view === "briefing" ? state.briefingBack : view;
+  $$(".nav-item").forEach((element) => {
+    const active = element.dataset.view === (navView === "source-detail" ? "sources" : navView);
+    element.classList.toggle("active", active);
+    if (active) element.setAttribute("aria-current", "page");
+    else element.removeAttribute("aria-current");
+  });
   const titles = { dashboard: "最新消息", sources: "关注列表", accounts: "账号管理", settings: "设置", "source-detail": "博主详情", briefing: "简报详情" };
   $("#view-title").textContent = titles[view] || "赛博情报局";
+  if (view === "settings") showSettingsPage(null, false);
 }
 
 function renderAutomationStatus(scheduler) {
@@ -434,11 +575,32 @@ function renderAutomationStatus(scheduler) {
     : "不会随开机或定时任务自动抓取，仍可手动检查。";
 }
 
+function mergeContent(existing, incoming, newestFirst = false) {
+  const fresh = new Map(incoming.map(item => [updateKey(item), item]));
+  const ordered = newestFirst ? [...incoming, ...existing] : [...existing, ...incoming];
+  const merged = new Map();
+  for (const item of ordered) {
+    const key = updateKey(item);
+    if (!merged.has(key)) merged.set(key, fresh.get(key) || item);
+  }
+  return [...merged.values()];
+}
+
+
 async function loadDashboard() {
+  const requestId = ++state.dashboardRequestId;
+  const previous = state.dashboard;
   try {
-    const data = await api("/api/dashboard");
+    const limit = Math.max(100, previous?.updates?.length || 0);
+    const data = await api(limit > 100 ? `/api/dashboard?limit=${limit}` : "/api/dashboard");
+    if (requestId !== state.dashboardRequestId) return;
+    const loaded = state.dashboard || previous;
+    const sameScope = loaded && (data.unread_count > 0 && loaded.unread_count > 0 || !data.unread_count && !loaded.unread_count && data.updates[0]?.batch_id === loaded.updates?.[0]?.batch_id);
+    if (sameScope) data.updates = mergeContent(loaded.updates || [], data.updates, true);
     state.dashboard = data;
-    $("#unread-count").textContent = data.unread_count;
+    $("#dashboard-load-more").hidden = !data.has_more;
+    $("#dashboard-load-more").disabled = false;
+    renderUnreadCount(data.unread_count);
     const last = data.last_check;
     $("#last-check-time").textContent = last ? formatTime(last.checked_at) : "暂无检查记录";
     $("#last-check-message").textContent = last?.message || "计划任务启动后会在这里显示结果";
@@ -453,13 +615,18 @@ async function loadDashboard() {
     const stillProcessing = data.updates.some((item) => ["pending", "processing"].includes(item.ai_status) || item.last_attempt_status === "processing");
     if (state.dashboardTimer) clearTimeout(state.dashboardTimer);
     state.dashboardTimer = stillProcessing ? setTimeout(() => {
-      if (state.currentView === "dashboard") loadDashboard();
+      if (state.currentView === "dashboard" && state.dashboardRequestId === requestId) loadDashboard();
     }, 5000) : null;
   } catch (error) { showToast(error.message, true); }
 }
 
 async function loadSources() {
-  try { const data = await api("/api/sources"); state.sources = data.sources || []; showPlatformPicker(); }
+  const requestId = state.sourceRequestId;
+  try {
+    const data = await api("/api/sources");
+    state.sources = data.sources || [];
+    if (state.currentView === "sources" && state.sourceRequestId === requestId) showPlatformPicker();
+  }
   catch (error) { showToast(error.message, true); }
 }
 
@@ -470,15 +637,16 @@ async function loadAccounts() {
     $("#account-list").innerHTML = accounts.map((account) => {
       const isZhihu = account.platform === "zhihu";
       const isXhs = account.platform === "xiaohongshu", isDouyin = account.platform === "douyin";
-      const identity = account.status === "logged_in"
+      let identity = account.status === "logged_in"
         ? (account.account_name || (isDouyin ? "抖音登录状态" : isXhs ? "小红书登录状态" : isZhihu ? "知乎登录状态" : "B站账号"))
         : (["expired", "credential_error"].includes(account.status)
           ? "登录凭证不可用，点击重新登录"
           : (account.status === "verification_required" ? "请打开官方窗口完成验证，再保存登录状态" : account.status === "unknown" ? "状态检查失败，仍可重新登录" : (isDouyin ? "点击打开抖音官方登录窗口" : isXhs ? "点击打开小红书登录窗口" : isZhihu ? "点击打开知乎登录窗口" : "点击扫码登录")));
-      const avatarUrl = safeExternalUrl(account.avatar);
+      if (window.CyberHost?.canLogin === false && account.status !== "logged_in") identity = "请在电脑端完成登录";
+      const avatarUrl = window.CyberHost?.showRemoteAvatars === false ? "" : safeExternalUrl(account.avatar);
       const image = avatarUrl
         ? `<img class="account-avatar" src="${escapeHtml(avatarUrl)}" alt="账号头像">`
-        : `<div class="account-logo ${isDouyin ? "douyin" : isXhs ? "xiaohongshu" : isZhihu ? "zhihu" : ""}">${isDouyin ? "抖" : isXhs ? "红" : isZhihu ? "知" : "B"}</div>`;
+        : platformIcon(account.platform, "account-logo");
       const storage = account.credential_storage || {};
       const canLogout = account.status === "logged_in" || storage.encrypted || storage.legacy_plaintext;
       const logout = canLogout ? `<button class="text-button account-logout-button" data-platform="${escapeHtml(account.platform)}" type="button">删除登录状态</button>` : "";
@@ -504,11 +672,61 @@ async function loadAccounts() {
   } catch (error) { showToast(error.message, true); }
 }
 
+function allowHostLogin() {
+  if (window.CyberHost?.canLogin !== false) return true;
+  showToast("请在电脑端“账号管理”完成登录，再回到手机刷新。");
+  return false;
+}
+
+function handleHostBack() {
+  const modal = $$(".modal-backdrop").find(node => !node.hidden);
+  if (modal) { modal.querySelector(".modal-close")?.click(); return true; }
+  if (state.currentView === "briefing") { backFromBriefing(); return true; }
+  if (state.currentView === "source-detail") { $("#back-to-sources").click(); return true; }
+  if (state.currentView === "sources" && state.sourcesStage === "sources") { showPlatformPicker(); return true; }
+  if (state.currentView === "settings" && state.settingsPage) { showSettingsPage(); return true; }
+  if (state.currentView !== "dashboard") { setView("dashboard"); loadDashboard(); return true; }
+  if (state.unreadPanelOpen) { toggleUnreadPanel(false); return true; }
+  return false;
+}
+
+function initializeHost() {
+  window.CyberApp = Object.freeze({back: handleHostBack});
+  const host = window.CyberHost;
+  if (!host) return;
+  if (host.openExternal) document.addEventListener("click", event => {
+    const link = event.target.closest("a[href]");
+    if (link && /^https?:/.test(link.href)) { event.preventDefault(); host.openExternal(link.href); }
+  });
+  if (host.kind !== "android") return;
+  document.body.classList.add("android-companion");
+  const banner = document.createElement("div");
+  banner.className = "android-connection";
+  banner.setAttribute("role", "status");
+  banner.innerHTML = '<span>正在连接电脑后台…</span><button type="button">连接设置</button>';
+  banner.querySelector("button").onclick = host.changeConnection;
+  $(".topbar").after(banner);
+  host.subscribeConnection((ok, message) => {
+    banner.classList.toggle("offline", !ok);
+    banner.querySelector("span").textContent = message;
+  });
+  const entry = document.createElement("button");
+  entry.type = "button"; entry.className = "settings-entry";
+  entry.innerHTML = '<span class="settings-entry-icon" aria-hidden="true">⌁</span><span><strong>电脑连接</strong><small></small></span><span class="settings-entry-arrow" aria-hidden="true">›</span>';
+  entry.querySelector("small").textContent = host.connectionInfo();
+  entry.onclick = host.changeConnection;
+  $(".settings-index-grid").prepend(entry);
+  $("#accounts-description").textContent = "查看电脑上的平台登录状态。登录或重新登录请在 Windows 端完成。";
+  $("#account-storage-description").textContent = "平台凭证和 AI Key 加密保存在电脑上。手机只保存连接电脑的配对信息，可在“设置 → 电脑连接”中删除。";
+}
+
+
 function hasDesktopBridge() {
-  return Boolean(window.pywebview?.api);
+  return window.CyberHost?.canLogin !== false && Boolean(window.pywebview?.api);
 }
 
 async function startZhihuLogin(event) {
+  if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
     showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
@@ -549,6 +767,7 @@ async function closeZhihuLoginModal() {
 }
 
 async function startXiaohongshuLogin(event) {
+  if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
     showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
@@ -595,6 +814,7 @@ async function closeXiaohongshuLoginModal() {
 }
 
 async function startDouyinLogin(event) {
+  if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
     showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
@@ -669,7 +889,8 @@ function openSourceModal() {
   $("#source-form-error").textContent = "";
   syncSourceFormPlatform();
   $("#source-modal").hidden = false;
-  $("#source-uid").focus();
+  const focusTarget = window.matchMedia("(max-width: 620px)").matches ? "#source-modal-title" : "#source-uid";
+  $(focusTarget).focus({ preventScroll: true });
 }
 
 function stopQrPolling() {
@@ -679,6 +900,7 @@ function stopQrPolling() {
 }
 
 async function startQrLogin() {
+  if (!allowHostLogin()) return;
   stopQrPolling();
   $("#account-modal").hidden = false;
   $("#bilibili-qr").removeAttribute("src");
@@ -707,58 +929,105 @@ async function pollQrLogin() {
   } catch (error) { $("#qr-status").textContent = error.message; stopQrPolling(); }
 }
 
-async function loadSourceDetail(platform, uid) {
+async function loadSourceDetail(platform, uid, options = {}) {
+  const previous = state.sourcePlatform === platform && state.sourceUid === uid ? state.sourceDetailData : null;
+  invalidateSourceRequests();
+  const requestId = state.sourceRequestId;
+  state.sourceRequestTarget = { platform, uid };
   try {
-    const previousContentType = state.sourcePlatform === platform && state.sourceUid === uid ? state.sourceContentType : null;
-    state.sourcePlatform = platform;
-    state.sourceUid = uid;
-    const data = await api(`/api/sources/${encodeURIComponent(platform)}/${encodeURIComponent(uid)}`);
-    $("#detail-source-name").textContent = data.source.name;
-    state.sourceName = data.source.name;
-    const platformLabel = data.source.platform === "douyin" ? "抖音账号" : data.source.platform === "xiaohongshu" ? "小红书账号" : data.source.platform === "zhihu" ? "知乎账号" : "B站账号编号";
-    $("#detail-source-meta").textContent = `${platformLabel} ${data.source.uid} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "douyin" ? "首次展示最近3条作品，后续检查公开主页新内容；读取范围有限时会提示" : platform === "xiaohongshu" ? "首次展示3篇，之后增量补抓，每次最多读取20篇；超过范围会提示" : "最近3条初始展示，之后每次最多追加3条新内容"}${["xiaohongshu", "douyin"].includes(platform) ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
-    state.sourceDetailData = data;
-    state.sourceContentType = ["zhihu", "douyin"].includes(platform) ? previousContentType : "video";
-    const typeOrder = ["图文", "文章", "回答", "想法", "提问", "视频", "其他"];
-    const grouped = Object.groupBy ? Object.groupBy(data.videos, (item) => item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他")) : data.videos.reduce((acc, item) => { const key = item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他"); (acc[key] ||= []).push(item); return acc; }, {});
-    const detailContainer = $("#source-videos");
-    const typeMenu = $("#detail-content-types");
-    if (["zhihu", "douyin"].includes(platform)) {
-      typeMenu.hidden = false;
-      typeMenu.innerHTML = typeOrder.filter((type) => grouped[type]?.length).map((type) => {
-        const items = grouped[type];
-        const unread = items.filter((item) => !item.read).length;
-        const key = items[0].content_type || "other";
-        return `<button class="content-type-card" type="button" data-content-type="${escapeHtml(key)}"><span><strong>${escapeHtml(type)}</strong><small>${items.length} 条内容</small></span>${unread ? `<b>${unread}<small>未读</small></b>` : "<i>已读</i>"}</button>`;
-      }).join("") || `<div class="empty-state">暂时还没有已收录内容。</div>`;
-      typeMenu.querySelectorAll(".content-type-card").forEach((button) => button.addEventListener("click", () => showSourceContentType(button.dataset.contentType)));
-      detailContainer.innerHTML = `<div class="empty-state type-select-hint">请选择上方内容类型。</div>`;
-      if (state.sourceContentType && data.videos.some((item) => (item.content_type || "other") === state.sourceContentType)) {
-        showSourceContentType(state.sourceContentType);
-      }
-    } else {
-      typeMenu.hidden = true;
-      detailContainer.innerHTML = "";
-      typeOrder.filter((type) => grouped[type]?.length).forEach((type) => {
-      const section = document.createElement("section");
-      section.className = "content-type-section";
-      section.innerHTML = `<div class="panel-title"><h3>${escapeHtml(type)}</h3><span>${grouped[type].length} 条</span></div><div class="content-type-list"></div>`;
-      detailContainer.appendChild(section);
-      renderUpdates(section.querySelector(".content-type-list"), grouped[type], `暂无${type}。`);
-      });
+    const base = `/api/sources/${encodeURIComponent(platform)}/${encodeURIComponent(uid)}`;
+    const limit = Math.max(200, previous?.videos?.length || 0);
+    let data = await api(limit > 200 ? `${base}?limit=${limit}` : base);
+    if (state.sourceRequestId !== requestId) return false;
+    if (data.needs_preparation && options.prepare !== false) {
+      data = await api(`${base}/prepare`, {method: "POST"});
+      if (state.sourceRequestId !== requestId) return false;
     }
-    if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">${platform === "xiaohongshu" ? "近期暂无图文笔记，之后发布的图文会自动收录。" : "暂时还没有可展示的内容。"}</div>`;
-    const failedCount = data.videos.filter((video) => ["bilibili", "article", "zvideo", "video", "image_note"].includes(video.platform === "bilibili" ? "bilibili" : video.content_type) && video.ai_status === "error").length;
-    $("#retry-source-summaries").hidden = failedCount === 0;
-    $("#retry-source-summaries").textContent = `重试失败简报（${failedCount}）`;
+    if (previous) data.videos = mergeContent(previous.videos, data.videos, true);
+    const previousContentType = state.sourcePlatform === platform && state.sourceUid === uid ? state.sourceContentType : null;
+    // Commit the displayed identity and its data together, only for the latest request.
+    Object.assign(state, { sourcePlatform: platform, sourceUid: uid, sourceName: data.source.name, sourceDetailData: data });
+    renderSourceCollection(data, platform, previousContentType);
     if (data.warning) showToast(data.warning, true);
     setView("source-detail");
     const stillProcessing = data.videos.some((video) => ["pending", "processing"].includes(video.ai_status) || video.last_attempt_status === "processing");
     if (state.sourceTimer) clearTimeout(state.sourceTimer);
     state.sourceTimer = stillProcessing ? setTimeout(() => {
-      if (state.currentView === "source-detail") loadSourceDetail(state.sourcePlatform, state.sourceUid);
+      if (state.currentView === "source-detail" && state.sourceRequestId === requestId) loadSourceDetail(platform, uid, {prepare: false});
     }, 5000) : null;
-  } catch (error) { showToast(error.message, true); }
+    return true;
+  } catch (error) {
+    if (state.sourceRequestId === requestId) {
+      state.sourceRequestTarget = state.sourcePlatform ? { platform: state.sourcePlatform, uid: state.sourceUid } : null;
+      $("#source-load-more").disabled = false;
+      showToast(error.message, true);
+    }
+    return false;
+  }
+}
+
+function renderSourceCollection(data, platform, previousContentType) {
+  $("#detail-source-name").textContent = data.source.name;
+  $("#detail-source-meta").textContent = `${platformLabel(data.source.platform)} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "douyin" ? "首次展示最近3条作品，后续检查公开主页新内容；读取范围有限时会提示" : platform === "xiaohongshu" ? "首次展示最近3条视频或图文，之后增量补抓，每次最多读取20条；超过范围会提示" : "首次展示3条，后续按分页补抓；范围未确认时会提示"}${["xiaohongshu", "douyin"].includes(platform) ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
+  if (data.source.scan_warning) $("#detail-source-meta").textContent += "\n读取范围：" + data.source.scan_warning;
+  $("#source-load-more").hidden = !data.has_more;
+  $("#source-load-more").disabled = false;
+  state.sourceContentType = ["zhihu", "douyin", "xiaohongshu"].includes(platform) ? previousContentType : "video";
+  const typeOrder = ["图文", "文章", "回答", "想法", "提问", "视频", "其他"];
+  const grouped = Object.groupBy ? Object.groupBy(data.videos, (item) => item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他")) : data.videos.reduce((acc, item) => { const key = item.content_type_label || (item.platform === "bilibili" ? "视频" : "其他"); (acc[key] ||= []).push(item); return acc; }, {});
+  const detailContainer = $("#source-videos");
+  const typeMenu = $("#detail-content-types");
+  if (["zhihu", "douyin", "xiaohongshu"].includes(platform)) {
+    typeMenu.hidden = false;
+    typeMenu.innerHTML = typeOrder.filter((type) => grouped[type]?.length).map((type) => {
+      const items = grouped[type];
+      const unread = items.filter((item) => !item.read).length;
+      const key = items[0].content_type || "other";
+      return `<button class="content-type-card" type="button" data-content-type="${escapeHtml(key)}"><span><strong>${escapeHtml(type)}</strong><small>${items.length} 条内容</small></span>${unread ? `<b>${unread}<small>未读</small></b>` : "<i>已读</i>"}</button>`;
+    }).join("") || `<div class="empty-state">暂时还没有已收录内容。</div>`;
+    typeMenu.querySelectorAll(".content-type-card").forEach((button) => button.addEventListener("click", () => showSourceContentType(button.dataset.contentType)));
+    detailContainer.innerHTML = `<div class="empty-state type-select-hint">请选择上方内容类型。</div>`;
+    if (state.sourceContentType && data.videos.some((item) => (item.content_type || "other") === state.sourceContentType)) {
+      showSourceContentType(state.sourceContentType);
+    }
+  } else {
+    typeMenu.hidden = true;
+    detailContainer.innerHTML = "";
+    typeOrder.filter((type) => grouped[type]?.length).forEach((type) => {
+    const section = document.createElement("section");
+    section.className = "content-type-section";
+    section.innerHTML = `<div class="panel-title"><h3>${escapeHtml(type)}</h3><span>${grouped[type].length} 条</span></div><div class="content-type-list"></div>`;
+    detailContainer.appendChild(section);
+    renderUpdates(section.querySelector(".content-type-list"), grouped[type], `暂无${type}。`);
+    });
+  }
+  if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">暂时还没有可展示的内容，之后发布的视频与图文会自动收录。</div>`;
+  const failedCount = data.videos.filter((video) => ["bilibili", "article", "zvideo", "video", "image_note"].includes(video.platform === "bilibili" ? "bilibili" : video.content_type) && video.ai_status === "error").length;
+  $("#retry-source-summaries").hidden = failedCount === 0;
+  $("#retry-source-summaries").textContent = `重试失败简报（${failedCount}）`;
+}
+
+
+async function loadMoreSourceContent(event) {
+  const button = event.currentTarget;
+  const { sourcePlatform: platform, sourceUid: uid, sourceDetailData: details, sourceRequestId: requestId } = state;
+  if (!details || state.currentView !== "source-detail" || button.disabled) return;
+  const isCurrent = () => state.currentView === "source-detail" && state.sourceRequestId === requestId && state.sourceDetailData === details;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/history?platform=${encodeURIComponent(platform)}&source_uid=${encodeURIComponent(uid)}&offset=${details.next_offset || 0}&limit=100`);
+    if (!isCurrent()) return;
+    const existing = mergeContent(details.videos, data.items);
+    details.videos = existing;
+    details.next_offset = data.next_offset;
+    details.has_more = data.has_more;
+    renderSourceCollection(details, platform, state.sourceContentType);
+    button.hidden = !data.has_more;
+  } catch (error) {
+    if (isCurrent()) showToast(error.message, true);
+  } finally {
+    if (isCurrent()) button.disabled = false;
+  }
 }
 
 function showSourceContentType(contentType) {
@@ -774,28 +1043,35 @@ function showSourceContentType(contentType) {
 
 function closeDeleteSourceModal() {
   $("#delete-source-modal").hidden = true;
+  state.deleteSourceTarget = null;
 }
 
 function openDeleteSourceModal() {
   if (!state.sourcePlatform || !state.sourceUid) return;
-  $("#delete-source-message").textContent = `确定要从关注列表删除“${state.sourceName || "这位博主"}”吗？`;
+  state.deleteSourceTarget = { platform: state.sourcePlatform, uid: state.sourceUid, name: state.sourceName };
+  $("#delete-source-message").textContent = `确定要从关注列表删除“${state.deleteSourceTarget.name || "这位博主"}”吗？`;
   $("#delete-source-modal").hidden = false;
   $("#confirm-delete-source").focus();
 }
 
 async function confirmDeleteSource() {
-  if (!state.sourcePlatform || !state.sourceUid) return;
+  const target = state.deleteSourceTarget;
   const button = $("#confirm-delete-source");
+  if (!target || button.disabled) return;
+  const requestId = state.sourceRequestId;
   button.disabled = true;
   try {
-    const data = await api(`/api/sources/${encodeURIComponent(state.sourcePlatform)}/${encodeURIComponent(state.sourceUid)}`, { method: "DELETE" });
-    closeDeleteSourceModal();
-    if (state.sourceTimer) clearTimeout(state.sourceTimer);
-    state.sourcePlatform = null;
-    state.sourceUid = null;
-    state.sourceName = null;
+    const data = await api(`/api/sources/${encodeURIComponent(target.platform)}/${encodeURIComponent(target.uid)}`, { method: "DELETE" });
+    if (state.deleteSourceTarget === target) closeDeleteSourceModal();
+    if (
+      state.currentView === "source-detail" && state.sourceRequestId === requestId
+      && state.sourceRequestTarget?.platform === target.platform && state.sourceRequestTarget?.uid === target.uid
+      && state.sourcePlatform === target.platform && state.sourceUid === target.uid
+    ) {
+      Object.assign(state, { sourcePlatform: null, sourceUid: null, sourceName: null, sourceDetailData: null, sourceContentType: null });
+      setView("sources");
+    }
     showToast(data.message);
-    setView("sources");
     await loadSources();
     await loadDashboard();
   } catch (error) {
@@ -805,9 +1081,28 @@ async function confirmDeleteSource() {
   }
 }
 
+async function loadTaskStatus() {
+  const labels = {queued: "等待处理", running: "正在分析", retry_wait: "等待重试", failed: "需要处理", succeeded: "已完成", cancelled: "已取消"};
+  try {
+    const data = await api("/api/tasks");
+    $("#task-counts").innerHTML = Object.entries(labels).map(([key, label]) => `<div class="task-count ${key === "failed" && data.counts[key] > 0 ? "needs-attention" : ""}"><span>${label}</span><strong>${escapeHtml(data.counts[key] || 0)}</strong></div>`).join("");
+    if (data.budget) {
+      $("#task-daily-budget").value = data.budget.max_daily_attempts;
+      $("#task-budget-status").textContent = `今日已开始 ${data.budget.used_today} 次分析${data.budget.max_daily_attempts ? `，上限 ${data.budget.max_daily_attempts}` : "，未设置上限"}。每次分析可能包含多次模型请求。`;
+    }
+    $("#task-list").innerHTML = data.jobs.length ? data.jobs.map(job => `<div class="task-row"><div><strong>${escapeHtml(job.title || job.content_id)}</strong><div class="setting-help">${escapeHtml(platformLabel(job.platform))}${job.source ? ` · ${escapeHtml(job.source)}` : ""} · ${escapeHtml(labels[job.state] || job.state)} · 尝试 ${job.attempts}/${job.max_attempts}${job.state === "retry_wait" ? ` · 下次重试 ${escapeHtml(formatTime(new Date(job.due_at * 1000).toISOString()))}` : ""}</div>${job.error ? `<div class="setting-help">${escapeHtml(job.error)}</div>` : ""}</div>${["queued", "retry_wait"].includes(job.state) ? `<button class="text-button cancel-task" data-job-id="${job.id}" type="button">取消</button>` : ""}</div>`).join("") : `<div class="empty-state">暂无后台任务。</div>`;
+    $("#task-list").querySelectorAll(".cancel-task").forEach(button => button.addEventListener("click", async () => {
+      button.disabled = true;
+      try { await api(`/api/tasks/${button.dataset.jobId}/cancel`, {method: "POST"}); await loadTaskStatus(); }
+      catch (error) { showToast(error.message, true); button.disabled = false; }
+    }));
+  } catch (error) { $("#task-counts").textContent = `任务状态读取失败：${error.message}`; }
+}
+
 async function loadSettings() {
   try {
     const data = await api("/api/settings");
+    await loadTaskStatus();
     fillAiProviderForm(data.ai_provider || {});
     renderAiKeyStatus(data.ai_provider || {});
     fillVideoAnalysisForm(data.video_analysis || {});
@@ -1031,7 +1326,7 @@ async function updateAutomation(event) {
 async function addSource(event) {
   event.preventDefault();
   const isZhihu = $("#source-platform").value === "zhihu";
-  $("#source-form-error").textContent = $("#source-platform").value === "douyin" ? "正在读取抖音博主的公开作品，请稍候…" : $("#source-platform").value === "xiaohongshu" ? "正在读取小红书博主的图文笔记，请稍候…" : isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
+  $("#source-form-error").textContent = $("#source-platform").value === "douyin" ? "正在读取抖音博主的公开作品，请稍候…" : $("#source-platform").value === "xiaohongshu" ? "正在读取小红书博主的视频与图文，请稍候…" : isZhihu ? "正在验证知乎账号并读取当前内容…" : "正在验证B站账号并读取当前视频…";
   try {
     const data = await api("/api/sources", { method: "POST", body: JSON.stringify({ platform: $("#source-platform").value, uid: $("#source-uid").value.trim(), name: $("#source-name").value.trim() || null, cookie: $("#source-cookie").value.trim() || null }) });
     $("#source-modal").hidden = true;
@@ -1051,17 +1346,21 @@ async function markRead() {
 
 async function retrySourceSummaries() {
   if (!state.sourcePlatform || !state.sourceUid) return;
+  const { sourcePlatform: platform, sourceUid: uid, sourceRequestId: requestId } = state;
   const button = $("#retry-source-summaries");
   button.disabled = true;
   try {
-    const data = await api(`/api/sources/${encodeURIComponent(state.sourcePlatform)}/${encodeURIComponent(state.sourceUid)}/retry-summaries`, { method: "POST" });
+    const data = await api(`/api/sources/${encodeURIComponent(platform)}/${encodeURIComponent(uid)}/retry-summaries`, { method: "POST" });
     showToast(data.message);
-    await loadSourceDetail(state.sourcePlatform, state.sourceUid);
+    if (state.currentView === "source-detail" && state.sourceRequestId === requestId) await loadSourceDetail(platform, uid);
   } catch (error) { showToast(error.message, true); }
   finally { button.disabled = false; }
 }
 
 async function checkNow() {
+  const buttons = [$("#check-now"), $("#mobile-check-now")];
+  if (buttons.some(button => button.disabled)) return;
+  buttons.forEach(button => { button.disabled = true; button.setAttribute("aria-busy", "true"); });
   try {
     const data = await api("/api/check-now", { method: "POST" });
     showToast(data.message);
@@ -1070,16 +1369,56 @@ async function checkNow() {
     }, delay));
   }
   catch (error) { showToast(error.message, true); }
+  finally { buttons.forEach(button => { button.disabled = false; button.removeAttribute("aria-busy"); }); }
 }
 
+async function loadMoreDashboardContent(event) {
+  const button = event.currentTarget;
+  const previous = state.dashboard, requestId = state.dashboardRequestId;
+  if (!previous || button.disabled) return;
+  const isCurrent = () => state.currentView === "dashboard" && state.dashboard === previous && state.dashboardRequestId === requestId;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/dashboard?offset=${previous.next_offset || 0}`);
+    if (!isCurrent()) return;
+    state.dashboard = {...data, updates: mergeContent(previous.updates || [], data.updates)};
+    renderUpdates($("#dashboard-updates"), state.dashboard.updates, "暂无消息");
+    button.hidden = !data.has_more;
+  } catch (error) { if (isCurrent()) showToast(error.message, true); }
+  finally { if (state.dashboardRequestId === requestId) button.disabled = false; }
+}
+
+
 function bindEvents() {
+  $$('[data-settings-page]').forEach(button => button.addEventListener("click", () => showSettingsPage(button.dataset.settingsPage)));
+  $("#back-to-settings").addEventListener("click", () => showSettingsPage());
+  $("#preview-cache").addEventListener("click", async () => {
+    try {
+      const data = await api("/api/cache/preview?days=30");
+      $("#cache-preview-status").textContent = `${data.file_count} 个超过30天的原始媒体文件，约 ${(data.bytes / 1048576).toFixed(1)} MB。成功简报与分析依据会保留。`;
+      $("#cleanup-cache").hidden = data.file_count === 0;
+    } catch (error) { showToast(error.message, true); }
+  });
+  $("#cleanup-cache").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { const data = await api("/api/cache/cleanup", {method: "POST", body: JSON.stringify({days: 30})}); $("#cache-preview-status").textContent = `已清理 ${data.removed} 个原始媒体文件。`; button.hidden = true; }
+    catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; }
+  });
+  $("#task-budget-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try { await api("/api/tasks/budget", {method: "PUT", body: JSON.stringify({max_daily_attempts: Number($("#task-daily-budget").value)})}); await loadTaskStatus(); showToast("分析预算已保存"); }
+    catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; }
+  });
+  $("#refresh-tasks").addEventListener("click", loadTaskStatus);
+  $("#dashboard-load-more").addEventListener("click", loadMoreDashboardContent);
+  $("#source-load-more").addEventListener("click", loadMoreSourceContent);
   $("#sidebar-toggle").addEventListener("click", () => {
-    const shell = $(".app-shell");
-    const collapsed = shell.classList.toggle("sidebar-collapsed");
-    const toggle = $("#sidebar-toggle");
-    toggle.textContent = collapsed ? "›" : "‹";
-    toggle.setAttribute("aria-label", collapsed ? "展开侧边栏" : "收起侧边栏");
-    toggle.title = collapsed ? "展开侧边栏" : "收起侧边栏";
+    setSidebarCollapsed(!$(".app-shell").classList.contains("sidebar-collapsed"), true);
   });
   $$(".nav-item").forEach((item) => item.addEventListener("click", async () => { setView(item.dataset.view); if (item.dataset.view === "dashboard") await loadDashboard(); if (item.dataset.view === "sources") await loadSources(); if (item.dataset.view === "accounts") await loadAccounts(); if (item.dataset.view === "settings") await loadSettings(); }));
   $$('[data-view-target="sources"]').forEach((item) => item.addEventListener("click", async () => { setView("sources"); await loadSources(); }));
@@ -1092,6 +1431,7 @@ function bindEvents() {
   $("#back-to-platforms").addEventListener("click", showPlatformPicker);
   $("#unread-summary-card").addEventListener("click", () => toggleUnreadPanel());
   $("#unread-summary-card").addEventListener("keydown", (event) => {
+    if (event.target !== event.currentTarget) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       toggleUnreadPanel();
@@ -1104,6 +1444,7 @@ function bindEvents() {
   });
   $("#back-from-briefing").addEventListener("click", backFromBriefing);
   $("#check-now").addEventListener("click", checkNow);
+  $("#mobile-check-now").addEventListener("click", checkNow);
   $("#automation-toggle").addEventListener("change", updateAutomation);
   $("#open-add-source").addEventListener("click", openSourceModal);
   $("#close-source-modal").addEventListener("click", () => { $("#source-modal").hidden = true; });
@@ -1162,7 +1503,10 @@ function bindEvents() {
 function updateClock() { $("#current-time").textContent = new Date().toLocaleString("zh-CN", { hour12: false }); }
 
 initializeFontSettings();
+initializeSidebar();
+initializeDialogs();
 bindEvents();
 updateClock();
 setInterval(updateClock, 1000);
+initializeHost();
 loadDashboard();

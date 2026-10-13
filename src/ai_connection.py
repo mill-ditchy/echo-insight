@@ -6,6 +6,7 @@ import requests
 
 from .ai_provider import normalize_api_url, resolve_provider_key
 from .processors.deepseek_summarizer import DeepSeekSummarizer
+from .ai_protocol import response_text
 
 
 TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOUlEQVR4nO3RQQ0AMAzDwGxYC3awBsH95OcDkEruybw03ep6PLDgD5CJkImQiZCJkImQiZCJkIlCPsNhAWy8VtLWAAAAAElFTkSuQmCC"
@@ -34,13 +35,7 @@ def test_provider_connection(api_url: str, model: str, api_key: str = "", *,
         except RuntimeError as exc:
             label = "图片输入测试" if mode == "vision" else "文字生成测试"
             raise RuntimeError(f"{label}失败：{exc}") from exc
-        choices = response.get("choices")
-        try:
-            output = choices[0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("AI 接口没有返回 Chat Completions 生成结果，请检查接口 URL") from exc
-        if not isinstance(output, str) or not output.strip():
-            raise RuntimeError("AI 接口已响应，但未生成文字，请更换模型后重试")
+        response_text(response, label="连接测试结果")
         results.append({"mode": mode, "model": selected_model, "elapsed_ms": round((time.perf_counter() - started) * 1000)})
     return {"success": True, "message": "连接成功，文字模型" + ("和图片输入均" if vision_enabled else "已") + "通过实际生成测试。请保存设置后使用。", "checks": results}
 

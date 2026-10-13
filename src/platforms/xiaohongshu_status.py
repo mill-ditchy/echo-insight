@@ -1,12 +1,12 @@
 """Persistent, credential-free collection status and catch-up queue."""
 
 import json
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from ..storage_lock import interprocess_lock
+from ..storage import atomic_json
 
 DATA_PATH = Path(__file__).resolve().parents[2] / "data" / "xiaohongshu_status.json"
 _lock = threading.RLock()
@@ -29,13 +29,7 @@ def _update(section, key, fields):
         data = _load()
         target = data[section] if key is None else data[section].setdefault(key, {})
         target.update(fields)
-        DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = DATA_PATH.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(DATA_PATH)
-        finally:
-            temporary.unlink(missing_ok=True)
+        atomic_json(DATA_PATH, data)
         return dict(target)
 
 
@@ -86,7 +80,7 @@ def record_result(uid, *, count=0, warning="", error=None):
             _update("session", None, {"status": kind, "checked_at": now, "message": message})
     else:
         status = "limited" if warning else "new_content" if count else "no_new"
-        message = f"读取完成，发现 {count} 篇图文" if count else "读取完成，没有新图文"
+        message = f"读取完成，发现 {count} 条作品" if count else "读取完成，没有新作品"
         save_source_status(uid, status=status, checked_at=now, last_success_at=now, message=message,
                            new_count=count, scan_warning=warning)
         _update("session", None, {"status": "verified", "checked_at": now, "message": "最近页面读取成功"})
