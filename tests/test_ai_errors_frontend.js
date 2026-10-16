@@ -99,4 +99,100 @@ const count = (text, value) => text.split(value).length - 1;
     assert.match(message, /下拉列表.*测试连接.*保存/);
     assert.equal(h.nodes.get('#api-key-input').value, 'unsaved-key');
   });
+
+  await check('every platform failure has one visible retry in both card and detail, including unknown errors', () => {
+    const h = harness();
+    for (const [platform, content_type] of [['bilibili', 'video'], ['xiaohongshu', 'video'], ['xiaohongshu', 'image_note'], ['douyin', 'image_note'], ['douyin', 'video'], ['zhihu', 'article'], ['zhihu', 'zvideo']]) {
+      for (const error of [legacy, '读取正文失败，请先登录']) {
+        const item = {...failed, platform, content_type, ai_error: error, last_attempt_error: error, visual_error: '', link: 'https://example.com/content'};
+        const card = h.context.updateCard(item);
+        assert.equal(count(card, 'class="text-button reanalyze-button"'), 1, `${platform} ${error}`);
+        assert.match(card, />重新分析<\/button>/);
+        assert.match(card, new RegExp(`data-platform="${platform}"`));
+        h.context.renderBriefing(item);
+        const visible = h.nodes.get('#briefing-ai-failure').innerHTML + h.nodes.get('#briefing-retry-actions').innerHTML;
+        assert.equal(count(visible, 'class="text-button reanalyze-button"'), 1);
+        assert.match(visible, />重新分析<\/button>/);
+      }
+    }
+    const old = {...failed, ai_status: 'available', ai_summary: '旧简报'};
+    assert.match(h.context.updateCard(old), />重新分析<\/button>/);
+    h.context.renderBriefing(old);
+    assert.equal(h.nodes.get('#briefing-summary').textContent, '旧简报');
+    const button = h.context.reanalysisButton({...old, last_attempt_status: 'pending'});
+    assert.match(button, /disabled>等待分析/);
+    assert.match(h.context.reanalysisButton({...failed, platform: 'xiaohongshu', content_type: 'image_note', requested_note_reading_mode: 'full', ai_note_reading_mode: 'quick'}), /data-reading-mode="full"/);
+  });
+
+  await check('retry buttons are bound in cards and details; duplicate clicks are suppressed and failed submissions recover', async () => {
+    const h = harness();
+    const first = {dataset: {platform: 'xiaohongshu', articleId: 'xhs_test', readingMode: 'full'}, textContent: '重新分析', disabled: false,
+      addEventListener(type, listener) { this[type] = listener; }};
+    const second = {...first, textContent: '完整分析图文'};
+    const container = {querySelectorAll(selector) { return selector === '.reanalyze-button' ? [first] : []; }};
+    h.context.renderUpdates(container, [failed], '空');
+    assert.equal(typeof first.click, 'function');
+    const originalQuery = h.context.document.querySelectorAll;
+    h.context.document.querySelectorAll = selector => selector === '.reanalyze-button' ? [first, second] : originalQuery(selector);
+    const pending = first.click({currentTarget: first});
+    const request = h.requests.at(-1);
+    assert.equal(request.url, '/api/videos/xiaohongshu/xhs_test/reanalyze');
+    assert.equal(request.options.method, 'POST');
+    assert.equal(JSON.parse(request.options.body).reading_mode, 'full');
+    assert.equal(first.disabled, true);
+    assert.equal(second.disabled, true);
+    const requestCount = h.requests.length;
+    await h.context.reanalyzeVideo({currentTarget: second});
+    assert.equal(h.requests.length, requestCount);
+    request.reject(new Error('请重新登录'));
+    await pending;
+    assert.equal(first.disabled, false);
+    assert.equal(second.disabled, false);
+    assert.equal(second.textContent, '完整分析图文');
+    assert.match(h.nodes.get('#toast').textContent, /重新分析未提交.*请重新登录/);
+    h.nodes.get('#briefing-ai-failure').querySelectorAll = container.querySelectorAll;
+    h.context.renderBriefing(failed);
+    assert.equal(typeof first.click, 'function');
+    h.nodes.get('#briefing-retry-actions').querySelectorAll = container.querySelectorAll;
+    h.context.renderBriefing({...failed, ai_error: '未知失败', last_attempt_error: '未知失败', visual_error: ''});
+    assert.equal(typeof first.click, 'function');
+  });
+
+  await check('retry of a saved briefing polls queued state while preserving its previous successful text', async () => {
+    const h = harness();
+    const old = {...failed, ai_status: 'available', ai_summary: '旧简报', ai_error: ''};
+    h.state.currentView = 'briefing';
+    h.state.briefingItem = old;
+    const button = {dataset: {platform: 'bilibili', articleId: 'test'}, textContent: '重新分析'};
+    const pending = h.context.reanalyzeVideo({currentTarget: button});
+    h.requests.at(-1).resolve({started: true, message: '已加入分析队列'});
+    await new Promise(resolve => setImmediate(resolve));
+    const request = h.requests.at(-1);
+    assert.equal(request.url, '/api/history/bilibili/test');
+    request.resolve({item: {...old, last_attempt_status: 'pending', last_attempt_error: '', visual_error: ''}});
+    await pending;
+    assert.equal(h.nodes.get('#briefing-summary').textContent, '旧简报');
+    assert.match(h.nodes.get('#briefing-retry-actions').innerHTML, /disabled>等待分析/);
+    const poll = [...h.timers.values()].find(timer => timer.delay === 5000);
+    assert.ok(poll, 'queued retry must keep polling even if ai_status is still available');
+    poll.callback();
+    h.requests.at(-1).resolve({item: {...old, last_attempt_status: 'available', visual_error: '', ai_summary: '新简报'}});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.nodes.get('#briefing-summary').textContent, '新简报');
+    assert.equal(h.nodes.get('#briefing-retry-actions').hidden, true);
+  });
+
+  await check('late retry responses never reopen a different briefing or source', async () => {
+    const h = harness();
+    h.state.currentView = 'briefing';
+    h.state.briefingItem = failed;
+    const button = {dataset: {platform: 'bilibili', articleId: 'test'}, textContent: '重新分析'};
+    const pending = h.context.reanalyzeVideo({currentTarget: button});
+    const countBefore = h.requests.length;
+    h.state.briefingItem = {...failed, article_id: 'another'};
+    h.requests.at(-1).resolve({started: true, message: '已加入分析队列'});
+    await pending;
+    assert.equal(h.requests.length, countBefore);
+    assert.equal(h.state.briefingItem.article_id, 'another');
+  });
 })().catch(error => {console.error(error); process.exitCode = 1;});

@@ -234,6 +234,28 @@ function aiItemErrors(item) {
   ].filter(Boolean))].filter(error => aiFailureDiagnosis(error));
 }
 
+const pendingReanalyses = new Set();
+
+function reanalysisBusy(item) {
+  return pendingReanalyses.has(updateKey(item)) || ["pending", "processing"].includes(item.last_attempt_status) || ["pending", "processing"].includes(item.ai_status);
+}
+
+function hasBriefingFailure(item) {
+  return item.ai_status === "error" || item.last_attempt_status === "error" || aiItemErrors(item).length > 0;
+}
+
+function reanalysisButton(item, label = "重新分析") {
+  if (!item.article_id || !["bilibili", "xiaohongshu", "douyin", "zhihu"].includes(item.platform)) return "";
+  const busy = reanalysisBusy(item);
+  const waiting = item.last_attempt_status === "pending" || item.ai_status === "pending";
+  const mode = isImageNote(item) ? item.requested_note_reading_mode || item.ai_note_reading_mode : "";
+  return `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" ${["quick", "full"].includes(mode) ? `data-reading-mode="${mode}"` : ""} ${busy ? "disabled" : ""}>${busy ? waiting ? "等待分析…" : "正在分析…" : escapeHtml(label)}</button>`;
+}
+
+function bindReanalysisActions(container) {
+  container.querySelectorAll?.(".reanalyze-button").forEach(button => button.addEventListener("click", reanalyzeVideo));
+}
+
 function aiFailurePanel(item) {
   const errors = aiItemErrors(item);
   if (!errors.length) return "";
@@ -243,7 +265,7 @@ function aiFailurePanel(item) {
     ${item.ai_summary ? '<p>本次分析未完全成功，已保留现有简报。</p>' : ""}
     ${guidance.map(entry => `<strong>${escapeHtml(entry.title)}</strong><p>${escapeHtml(entry.reason)}</p><p>${escapeHtml(entry.request)}</p><p>处理方法：设置 → AI 接入 → ${escapeHtml(entry.action)}</p>`).join("")}
     <p>历史请求可能使用之前启用的配置，请核对后编辑；如果要换配置，先启用目标项。修复后返回这条内容重新分析。</p>
-    <button type="button" class="text-button ai-fix-config">修改 AI 配置</button>
+    <div class="ai-retry-actions">${reanalysisButton(item)}<button type="button" class="text-button ai-fix-config">修改 AI 配置</button></div>
     <details><summary>查看技术详情</summary><pre>${escapeHtml(errors.join("\n\n"))}</pre></details>
   </aside>`;
 }
@@ -311,7 +333,6 @@ const summaryResizeObserver = typeof ResizeObserver !== "undefined"
 function updateCard(item) {
   const summary = summaryText(item);
   const sourceLabel = item.is_baseline ? `${item.source} · 初始展示` : item.source;
-  const isReanalyzing = item.last_attempt_status === "processing";
   let analysisLabel = "";
   if (item.ai_summary && item.ai_analysis_mode === "visual") analysisLabel = `视觉+文字 · ${item.ai_frame_count || 0}帧`;
   else if (item.ai_summary && item.visual_error) analysisLabel = "纯文字回退";
@@ -323,7 +344,8 @@ function updateCard(item) {
   const analysisNote = [...new Set([item.fetch_warning, item.visual_error, ...(["xiaohongshu", "douyin"].includes(item.platform) ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(note => note && !diagnosedErrors.includes(note) && note !== item.ai_error))].join("；");
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
-  const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
+  const reanalyzeButton = diagnosedErrors.length ? "" : hasBriefingFailure(item) || reanalysisBusy(item)
+    ? reanalysisButton(item) : item.platform === "bilibili" && item.link ? reanalysisButton(item, "重新视觉分析") : "";
   const summaryToggle = `<button class="text-button summary-toggle" hidden>展开简报</button>`;
   const originalLabel = item.platform === "douyin" ? "打开抖音原作品 ↗" : item.platform === "xiaohongshu" ? "打开原笔记 ↗" : item.platform === "zhihu" ? "打开原内容 ↗" : "打开原视频 ↗";
   const originalUrl = safeExternalUrl(item.link);
@@ -350,7 +372,7 @@ function renderUpdates(container, items, emptyText) {
     updateSummaryToggle(element);
     summaryResizeObserver?.observe(element);
   });
-  container.querySelectorAll(".reanalyze-button").forEach((button) => button.addEventListener("click", reanalyzeVideo));
+  bindReanalysisActions(container);
   container.querySelectorAll(".video-evidence").forEach((element) => element.addEventListener("toggle", async () => {
     if (!element.open || element.dataset.loaded) return;
     const body = element.querySelector(".video-evidence-body");
@@ -387,25 +409,36 @@ function renderUpdates(container, items, emptyText) {
 
 async function reanalyzeVideo(event) {
   const button = event.currentTarget;
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "正在加入队列…";
+  const key = updateKey({platform: button.dataset.platform, article_id: button.dataset.articleId});
+  if (button.disabled || pendingReanalyses.has(key)) return;
+  pendingReanalyses.add(key);
+  const origin = {view: state.currentView, platform: state.sourcePlatform, uid: state.sourceUid, item: state.briefingItem};
+  const matching = [...new Set([button, ...$$(".reanalyze-button").filter(other => other.dataset.platform === button.dataset.platform && other.dataset.articleId === button.dataset.articleId)])];
+  const labels = matching.map(other => other.textContent);
+  matching.forEach(other => { other.disabled = true; other.textContent = "正在加入队列…"; });
+  let submitted = false;
   try {
     const data = await api(`/api/videos/${encodeURIComponent(button.dataset.platform)}/${encodeURIComponent(button.dataset.articleId)}/reanalyze`, { method: "POST", ...(button.dataset.readingMode ? {body: JSON.stringify({reading_mode: button.dataset.readingMode})} : {}) });
+    submitted = true;
+    matching.forEach(other => { other.textContent = "等待分析…"; });
     showToast(data.message);
-    if (state.currentView === "briefing") await refreshNoteBriefing();
-    else if (state.currentView === "source-detail") await loadSourceDetail(state.sourcePlatform, state.sourceUid);
-    else await loadDashboard();
+    // Queue state is now persisted; fresh views can render its real status.
+    pendingReanalyses.delete(key);
+    if (state.currentView !== origin.view) return;
+    if (origin.view === "briefing" && state.briefingItem === origin.item) await refreshNoteBriefing();
+    else if (origin.view === "source-detail" && state.sourcePlatform === origin.platform && state.sourceUid === origin.uid) await loadSourceDetail(origin.platform, origin.uid);
+    else if (origin.view === "dashboard") await loadDashboard();
   } catch (error) {
-    showToast(error.message, true);
-    button.disabled = false;
-    button.textContent = originalText;
+    showToast(submitted ? `已提交分析，状态刷新失败：${error.message}。请刷新页面查看。` : `重新分析未提交：${error.message}`, true);
+    if (!submitted) matching.forEach((other, index) => { other.disabled = false; other.textContent = labels[index]; });
+  } finally {
+    pendingReanalyses.delete(key);
   }
 }
 
 function noteAnalysisButtons(item) {
   if (!item.link) return "";
-  const busy = ["pending", "processing"].includes(item.last_attempt_status) || ["pending", "processing"].includes(item.ai_status);
+  const busy = reanalysisBusy(item);
   if (["xiaohongshu", "douyin"].includes(item.platform) && item.content_type === "video") return `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" ${busy ? "disabled" : ""}>${busy ? "正在分析视频…" : "重新分析视频"}</button>`;
   if (busy) return `<button class="text-button" type="button" disabled>正在分析图文…</button>`;
   return ["quick", "full"].map(mode => `<button type="button" class="text-button reanalyze-button" data-platform="${escapeHtml(item.platform)}" data-article-id="${escapeHtml(item.article_id)}" data-reading-mode="${mode}" ${busy ? "disabled" : ""}>${busy ? "正在分析…" : mode === "full" ? "完整分析图文" : "重新分析图文（快速）"}</button>`).join("");
@@ -418,7 +451,7 @@ async function refreshNoteBriefing() {
   if (state.currentView !== "briefing" || state.briefingItem !== item) return;
   const updated = data.item;
   if (updated) { state.briefingItem = updated; renderBriefing(updated); }
-  if (updated && (["pending", "processing"].includes(updated.ai_status) || updated.last_attempt_status === "processing")) {
+  if (updated && reanalysisBusy(updated)) {
     setTimeout(() => {
       if (state.currentView === "briefing" && state.briefingItem === updated) refreshNoteBriefing().catch(error => showToast(error.message, true));
     }, 5000);
@@ -494,6 +527,11 @@ function renderBriefing(item) {
   failure.innerHTML = aiFailurePanel(item);
   failure.hidden = !failure.innerHTML;
   bindAiFailureActions(failure);
+  bindReanalysisActions(failure);
+  const retry = $("#briefing-retry-actions");
+  retry.innerHTML = !failure.innerHTML && (hasBriefingFailure(item) || reanalysisBusy(item)) ? reanalysisButton(item) : "";
+  retry.hidden = !retry.innerHTML;
+  bindReanalysisActions(retry);
   const original = $("#briefing-original-link");
   const originalUrl = safeExternalUrl(item.link);
   original.href = originalUrl || "#";
@@ -525,7 +563,7 @@ async function openBriefing(item) {
   for (const selector of ["#briefing-note-original", "#briefing-note-evidence-details", "#briefing-note-options"]) $(selector).open = false;
   renderBriefing(item);
   setView("briefing");
-  if (["pending", "processing"].includes(item.ai_status) || item.last_attempt_status === "processing") setTimeout(() => refreshNoteBriefing().catch(error => showToast(error.message, true)), 5000);
+  if (reanalysisBusy(item)) setTimeout(() => refreshNoteBriefing().catch(error => showToast(error.message, true)), 5000);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -760,7 +798,7 @@ async function loadDashboard() {
     $("#latest-caption").textContent = data.unread_count ? `有 ${data.unread_count} 条内容等待查看` : "最近一次更新内容";
     renderUnreadPanel(data.unread_updates || []);
     renderUpdates($("#dashboard-updates"), data.updates, "暂时没有更新内容。后台检查到新内容后会出现在这里。");
-    const stillProcessing = data.updates.some((item) => ["pending", "processing"].includes(item.ai_status) || item.last_attempt_status === "processing");
+    const stillProcessing = data.updates.some(reanalysisBusy);
     if (state.dashboardTimer) clearTimeout(state.dashboardTimer);
     state.dashboardTimer = stillProcessing ? setTimeout(() => {
       if (state.currentView === "dashboard" && state.dashboardRequestId === requestId) loadDashboard();
@@ -1098,7 +1136,7 @@ async function loadSourceDetail(platform, uid, options = {}) {
     renderSourceCollection(data, platform, previousContentType);
     if (data.warning) showToast(data.warning, true);
     setView("source-detail");
-    const stillProcessing = data.source.following !== false && data.videos.some((video) => ["pending", "processing"].includes(video.ai_status) || video.last_attempt_status === "processing");
+    const stillProcessing = data.videos.some(video => (data.source.following !== false && reanalysisBusy(video)) || ["pending", "processing"].includes(video.last_attempt_status));
     if (state.sourceTimer) clearTimeout(state.sourceTimer);
     state.sourceTimer = stillProcessing ? setTimeout(() => {
       if (state.currentView === "source-detail" && state.sourceRequestId === requestId) loadSourceDetail(platform, uid, {prepare: false});

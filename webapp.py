@@ -477,7 +477,7 @@ def _start_baseline_processing(source: dict, articles: list[dict]) -> bool:
 
 def _start_visual_reanalysis(item: dict) -> bool:
     from src.task_worker import submit_articles
-    if item.get("platform") not in {"bilibili", "xiaohongshu", "douyin"} or not item.get("article_id") or not item.get("link"):
+    if not needs_ai_summary(item) or not item.get("article_id") or not item.get("link"):
         return False
     if item.get("platform") in {"xiaohongshu", "douyin"}:
         from src.processors.xiaohongshu_summary import note_analysis_running
@@ -796,7 +796,7 @@ def retry_source_summaries(platform: str, uid: str) -> dict:
 
 @app.post("/api/videos/{platform}/{current_article_id}/reanalyze")
 def reanalyze_video(platform: str, current_article_id: str, payload: NoteAnalysisRequest | None = None) -> dict:
-    if platform not in {"bilibili", "xiaohongshu", "douyin"}:
+    if platform not in {"bilibili", "xiaohongshu", "douyin", "zhihu"}:
         raise HTTPException(status_code=400, detail="此内容暂不支持重新分析")
     item = next(
         (
@@ -809,6 +809,10 @@ def reanalyze_video(platform: str, current_article_id: str, payload: NoteAnalysi
     )
     if not item:
         raise HTTPException(status_code=404, detail="没有找到这条内容")
+    if not needs_ai_summary(item):
+        raise HTTPException(status_code=400, detail="此内容类型暂不支持 AI 简报分析")
+    if not item.get("link"):
+        raise HTTPException(status_code=400, detail="历史记录缺少原内容链接，请重新抓取这位博主的内容后再重试")
     if platform in {"xiaohongshu", "douyin"} and item.get("content_type") == "image_note":
         item["requested_note_reading_mode"] = payload.reading_mode if payload else item.get("ai_note_reading_mode") or ("full" if platform == "douyin" else "quick")
     started = _start_visual_reanalysis(item)

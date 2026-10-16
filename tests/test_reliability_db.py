@@ -177,6 +177,26 @@ class ReliabilityDBTests(unittest.TestCase):
         self.assertEqual(saved["ai_status"], "available")
         self.assertEqual(saved["last_attempt_status"], "error")
 
+    def test_manual_retry_publishes_waiting_state_and_deduplicates_before_worker_starts(self):
+        for summary in ("", "旧成功结果"):
+            with self.subTest(summary=summary):
+                identifier = "with-old" if summary else "without-old"
+                item = content(identifier, ai_status="available" if summary else "error", ai_summary=summary,
+                               ai_error="失败", last_attempt_status="error", last_attempt_error="失败")
+                self.initialize([item])
+                update_history.record_updates([item])
+                first, created = task_queue.enqueue(item, reanalyze=True)
+                self.assertTrue(created)
+                saved = update_history.get_update("bilibili", identifier)
+                self.assertEqual(saved["last_attempt_status"], "pending")
+                self.assertEqual(saved["last_attempt_error"], "")
+                self.assertEqual(saved["ai_stage"], "waiting")
+                self.assertEqual(saved.get("ai_summary", ""), summary)
+                self.assertEqual(saved["ai_status"], "available" if summary else "pending")
+                repeated, created = task_queue.enqueue(item, reanalyze=True)
+                self.assertFalse(created)
+                self.assertEqual(first["id"], repeated["id"])
+
     def test_progress_is_fenced_and_tracks_actual_analysis_stage(self):
         self.initialize([content()])
         task_queue.enqueue(content(), now=10)

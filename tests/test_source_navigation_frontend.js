@@ -38,6 +38,8 @@ function harness() {
   // Run the complete production script, including event binding. Static ID
   // lookups must match the real HTML rather than silently creating missing nodes.
   const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => ['#' + match[1], node()]));
+  assert.match(html, /id="briefing-note-original"><summary>/);
+  nodes.set('#briefing-note-original > summary', node());
   nodes.set('.app-shell', node());
   const settingsPanels = [...html.matchAll(/<div\b[^>]*\bdata-settings-panel="([^"]+)"[^>]*>/g)].map(match => {
     const id = match[0].match(/\bid="([^"]+)"/);

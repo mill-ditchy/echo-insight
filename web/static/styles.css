@@ -389,6 +389,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ai-failure details { margin-top: 10px; }
 .ai-failure summary { cursor: pointer; }
 .ai-failure pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.ai-retry-actions { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+.ai-retry-actions .reanalyze-button { font-weight: 700; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }

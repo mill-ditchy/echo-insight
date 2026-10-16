@@ -199,6 +199,31 @@ class LocalApiSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["started"])
 
+    def test_single_failed_summary_can_be_retried_on_every_ai_platform(self):
+        for platform, kind in (("bilibili", "video"), ("xiaohongshu", "video"), ("xiaohongshu", "image_note"),
+                               ("douyin", "image_note"), ("douyin", "video"), ("zhihu", "article"), ("zhihu", "zvideo")):
+            item = {"platform": platform, "content_type": kind, "article_id": "failed", "ai_status": "error",
+                    "link": "https://example.com/content", "requested_note_reading_mode": "full", "ai_note_reading_mode": "full"}
+            with self.subTest(platform=platform, kind=kind), patch.object(webapp, "list_updates", return_value=[item]), \
+                 patch("src.task_worker.submit_articles", return_value=(True, [1])) as submit:
+                response = self.client.post(f"/api/videos/{platform}/failed/reanalyze", headers={"X-Cyber-Request": "1"})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["started"])
+                submit.assert_called_once_with([item], reanalyze=True)
+                if kind == "image_note":
+                    self.assertEqual(item["requested_note_reading_mode"], "full")
+
+    def test_single_retry_rejects_missing_links_and_unsupported_types_with_clear_errors(self):
+        for fields, reason in (({"platform": "bilibili"}, "缺少原内容链接"),
+                               ({"platform": "zhihu", "content_type": "answer", "link": "https://example.com"}, "此内容类型")):
+            item = {"article_id": "failed", **fields}
+            with self.subTest(fields=fields), patch.object(webapp, "list_updates", return_value=[item]), \
+                 patch("src.task_worker.submit_articles") as submit:
+                response = self.client.post(f"/api/videos/{item['platform']}/failed/reanalyze", headers={"X-Cyber-Request": "1"})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(reason, response.json()["detail"])
+                submit.assert_not_called()
+
     def test_source_payload_groups_zhihu_content_and_unread_counts(self) -> None:
         source = {"name": "测试用户", "platform": "zhihu", "uid": "people:demo"}
         with patch.object(

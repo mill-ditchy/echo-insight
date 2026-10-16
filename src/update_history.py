@@ -75,7 +75,7 @@ def apply_task_result(db, job, state, error="", article=None, stage=None):
     item = database().get_content(db, job["platform"], job["content_id"])
     if item is None:
         raise RuntimeError("分析任务对应内容不存在")
-    status = {"succeeded": "available", "retry_wait": "pending", "failed": "error", "running": "processing", "cancelled": "cancelled"}[state]
+    status = {"queued": "pending", "succeeded": "available", "retry_wait": "pending", "failed": "error", "running": "processing", "cancelled": "cancelled"}[state]
     phase = stage or {"succeeded": "completed", "retry_wait": "waiting", "failed": "failed", "cancelled": "cancelled"}.get(state, "")
     result = {key: value for key, value in (article or {}).items()
               if key.startswith(("ai_", "visual_", "summary_")) or key in NOTE_FIELDS}

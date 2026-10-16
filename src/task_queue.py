@@ -110,6 +110,8 @@ def enqueue(article, *, reanalyze=False, max_attempts=2, retry_delay=300, now=No
                 (platform, content_id, version, encoded, now, now, now, min(4, max(1, max_attempts)), retry_delay))
             job_id = result.lastrowid
         job = dict(db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+        if reanalyze and database.get_content(db, platform, content_id):
+            update_history.apply_task_result(db, job, "queued", article=payload, stage="waiting")
         db.commit()
         return job, True
 
