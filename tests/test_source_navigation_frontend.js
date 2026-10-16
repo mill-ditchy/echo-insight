@@ -39,6 +39,23 @@ function harness() {
   // lookups must match the real HTML rather than silently creating missing nodes.
   const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => ['#' + match[1], node()]));
   nodes.set('.app-shell', node());
+  const settingsPanels = [...html.matchAll(/<div\b[^>]*\bdata-settings-panel="([^"]+)"[^>]*>/g)].map(match => {
+    const id = match[0].match(/\bid="([^"]+)"/);
+    const panel = id ? nodes.get('#' + id[1]) : node();
+    panel.dataset = {settingsPanel: match[1]};
+    panel.hidden = /\bhidden\b/.test(match[0]);
+    const headingMatch = html.slice(match.index + match[0].length).match(/<h3([^>]*)>([^<]*)<\/h3>/);
+    const headingId = headingMatch[1].match(/\bid="([^"]+)"/);
+    const heading = headingId ? nodes.get('#' + headingId[1]) : node();
+    heading.textContent = headingMatch[2];
+    panel.querySelector = selector => selector === 'h3' ? heading : node();
+    return panel;
+  });
+  const settingsLinks = [...html.matchAll(/<button\b[^>]*\bdata-settings-page="([^"]+)"[^>]*>/g)].map(match => {
+    const button = node();
+    button.dataset = {settingsPage: match[1]};
+    return button;
+  });
   const requests = [], timers = new Map();
   let timerId = 0;
   const context = vm.createContext({
@@ -49,7 +66,11 @@ function harness() {
         assert.ok(nodes.has(selector), 'Missing HTML node: ' + selector);
         return nodes.get(selector);
       },
-      querySelectorAll() { return []; },
+      querySelectorAll(selector) {
+        if (selector === '[data-settings-panel]') return settingsPanels;
+        if (selector === '[data-settings-page]') return settingsLinks;
+        return [];
+      },
       createElement: node, addEventListener() {},
     },
     localStorage: {getItem() { return null; }},

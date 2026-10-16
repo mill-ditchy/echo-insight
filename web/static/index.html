@@ -7,7 +7,7 @@
   <title>赛博情报局</title>
   <link rel="stylesheet" href="/static/styles.css?v=20261012-android-layout">
   <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
-  <link rel="stylesheet" href="/static/settings.css?v=20261016-ai-profiles">
+  <link rel="stylesheet" href="/static/settings.css?v=20261016-ai-profile-pages">
   <link rel="stylesheet" href="/static/video-lab.css?v=20261016">
   <!-- companion-styles -->
 </head>
@@ -239,15 +239,17 @@
             </div>
             <button class="text-button reset-font-button" id="reset-font-settings" type="button">恢复默认大小</button>
           </div>
-          <div class="panel settings-panel ai-settings-panel" data-settings-panel="ai" hidden>
-            <div class="panel-title"><h3>AI 接入</h3><span>保存多套配置，随时切换</span></div>
+          <div class="panel settings-panel ai-settings-panel" id="ai-profiles-page" data-settings-panel="ai" hidden>
+            <div class="panel-title"><h3>AI 接入</h3><button class="primary-button ai-add-button" id="ai-profile-new" type="button" aria-label="新增 AI 配置" title="新增配置"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
             <p class="setting-help">可保存多个供应商、接口和模型组合。打开对应配置的开关即可切换，新开始的分析会使用当前启用项。</p>
             <p class="setting-help" id="ai-key-status">正在读取 AI 设置…</p>
-            <div class="ai-profiles-heading"><h4>已保存的配置</h4><button class="ghost-button" id="ai-profile-new" type="button">新增配置</button></div>
+            <h4 class="ai-profiles-heading">已保存的配置</h4>
             <div class="ai-profiles-list" id="ai-profiles-list" aria-label="已保存的 AI 配置"></div>
             <div class="setting-result" id="ai-profiles-result" role="status" aria-live="polite"></div>
-            <h4 class="settings-section-title" id="ai-profile-editor-title">新增配置</h4>
-            <p class="ai-field-help" id="ai-profile-editor-help">填写并保存后，可在上方启用。</p>
+          </div>
+          <div class="panel settings-panel ai-settings-panel" id="ai-profile-editor-page" data-settings-panel="ai-profile" hidden>
+            <div class="panel-title"><h3 id="ai-profile-editor-title">新增配置</h3></div>
+            <p class="ai-field-help" id="ai-profile-editor-help">填写并保存后，可在配置列表中启用。</p>
             <form class="api-key-form" id="api-key-form">
               <div class="ai-provider-fields">
                 <div>
@@ -289,7 +291,7 @@
               </div>
               <p class="ai-field-help">API Key 会加密保存在本机，不会回显。远程服务请使用 HTTPS。</p>
               <label for="ai-profile-activate"><input id="ai-profile-activate" type="checkbox">保存后启用这套配置</label>
-              <button class="primary-button" type="submit">保存配置</button>
+              <div class="ai-profile-form-actions"><button class="ghost-button" id="ai-profile-cancel" type="button">取消</button><button class="primary-button" type="submit">保存配置</button></div>
               <div class="setting-result" id="api-key-result" role="status" aria-live="polite"></div>
             </form>
           </div>
@@ -419,7 +421,7 @@
   </div>
   <div class="toast" id="toast"></div>
   <!-- companion-scripts -->
-  <script src="/static/app.js?v=20261016-ai-profiles"></script>
+  <script src="/static/app.js?v=20261016-ai-profile-pages"></script>
   <script src="/static/video-lab.js?v=20261016"></script>
 </body>
 </html>

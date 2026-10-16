@@ -564,10 +564,12 @@ function showSettingsPage(page = null, focus = true) {
   const selected = panels.find(panel => panel.dataset.settingsPanel === page);
   if (page && !selected) return;
   const previous = state.settingsPage;
+  if (previous === "ai-profile" && page !== "ai-profile") leaveAiProfileEditor();
   state.settingsPage = page;
   $("#settings-index").hidden = Boolean(page);
   $("#settings-detail").hidden = !page;
   panels.forEach(panel => { panel.hidden = panel !== selected; });
+  $("#back-to-settings").textContent = page === "ai-profile" ? "← AI 接入" : "← 全部设置";
   const heading = selected?.querySelector("h3");
   $("#view-title").textContent = heading?.textContent || "设置";
   if (!focus) return;
@@ -596,6 +598,7 @@ function setView(view) {
     state.dashboardTimer = null;
   }
   if (view !== "source-detail") invalidateSourceRequests();
+  if (view !== "settings" && state.settingsPage === "ai-profile") showSettingsPage("ai", false);
   state.currentView = view;
   if (view !== "video-lab") window.VideoLab?.leave();
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
@@ -1153,9 +1156,9 @@ async function loadTaskStatus() {
 async function loadSettings() {
   try {
     const data = await api("/api/settings");
-    await loadTaskStatus();
+    aiProviderDefaults = data.ai_provider || {};
     applyAiProfiles(data.ai_providers || { profiles: [], active_profile_id: null });
-    editAiProfile(aiProfiles.active_profile_id, false, false, data.ai_provider || {});
+    await loadTaskStatus();
     fillVideoAnalysisForm(data.video_analysis || {});
     await loadMediaKnowledge();
     const current = data.interval_hours;
@@ -1263,6 +1266,7 @@ function renderAiKeyStatus(provider) {
 
 let aiModelCatalog = { apiUrl: "", models: [] };
 let aiProfiles = { profiles: [], active_profile_id: null };
+let aiProviderDefaults = {};
 let aiEditingProfileId = null;
 let aiSourceProfileId = null;
 let aiEditorVersion = 0;
@@ -1273,7 +1277,7 @@ function renderAiProfiles() {
   $("#ai-profiles-list").innerHTML = aiProfiles.profiles.length ? aiProfiles.profiles.map(profile => {
     const active = profile.id === aiProfiles.active_profile_id;
     const keyStatus = profile.api_key?.configured ? "密钥已保存" : "密钥需要重新配置";
-    return `<article class="ai-profile-card${active ? " is-active" : ""}${profile.id === aiEditingProfileId ? " is-editing" : ""}">
+    return `<article class="ai-profile-card${active ? " is-active" : ""}">
       <div class="ai-profile-card-heading"><div><strong>${escapeHtml(profile.name)}</strong><div class="ai-profile-provider">${escapeHtml(profile.provider_name)}</div></div>
         <label class="ai-profile-switch"><input type="checkbox" role="switch" data-ai-activate="${escapeHtml(profile.id)}" aria-label="启用 ${escapeHtml(profile.name)}" ${active ? "checked" : ""} ${active || aiProfilesBusy ? "disabled" : ""}><span>${active ? "已启用" : "启用"}</span></label></div>
       <div class="ai-profile-details"><p>${escapeHtml(profile.api_url)}</p><p>文字：${escapeHtml(profile.model)}</p><p>画面：${profile.vision_enabled ? escapeHtml(profile.vision_model || profile.model) : "未启用"} · ${keyStatus}</p></div>
@@ -1297,13 +1301,13 @@ function applyAiProfiles(catalog) {
     : "保存不会切换当前接口；也可勾选“保存后启用”。";
 }
 
-function editAiProfile(profileId = null, copy = false, preserveModels = false, defaults = {}) {
-  const profile = profileId ? aiProfiles.profiles.find(item => item.id === profileId) : defaults;
+function editAiProfile(profileId = null, copy = false) {
+  const profile = profileId ? aiProfiles.profiles.find(item => item.id === profileId) : aiProfiles.profiles.length ? {} : aiProviderDefaults;
   if (!profile) return;
   aiEditingProfileId = copy ? null : profileId;
   aiSourceProfileId = copy ? profileId : null;
   aiEditorVersion += 1;
-  if (!preserveModels) resetAiModelChoices();
+  resetAiModelChoices();
   fillAiProviderForm(profile);
   $("#ai-profile-name").value = copy ? `${profile.name} 副本`.slice(0, 80) : profileId ? profile.name : "";
   $("#ai-provider-name").value = profile.provider_name || "";
@@ -1319,6 +1323,15 @@ function editAiProfile(profileId = null, copy = false, preserveModels = false, d
     $(selector).classList.remove("setting-error");
   });
   renderAiProfiles();
+  showSettingsPage("ai-profile");
+}
+
+function leaveAiProfileEditor() {
+  // Invalidate pending tests and saves before leaving or opening another draft.
+  aiEditorVersion += 1;
+  aiEditingProfileId = null;
+  aiSourceProfileId = null;
+  $("#api-key-input").value = "";
 }
 
 function refreshAiButtons() {
@@ -1337,7 +1350,7 @@ async function changeAiProfile(profileId, action) {
   try {
     const data = await api(`/api/settings/ai-providers/${encodeURIComponent(profileId)}${action === "activate" ? "/activate" : ""}`, { method: action === "activate" ? "POST" : "DELETE" });
     applyAiProfiles(data.ai_providers);
-    if (action === "delete" && (aiEditingProfileId === profileId || aiSourceProfileId === profileId)) editAiProfile(aiProfiles.active_profile_id);
+    if (action === "delete" && (aiEditingProfileId === profileId || aiSourceProfileId === profileId)) showSettingsPage("ai");
     result.textContent = data.message;
     showToast(data.message);
   } catch (error) {
@@ -1473,10 +1486,10 @@ async function updateAiProvider(event) {
     });
     const unchanged = stillEditing();
     applyAiProfiles(data.ai_providers);
+    const savedMessage = data.profile_id === data.ai_providers.active_profile_id ? "配置已保存并启用，将用于新开始的分析。" : "配置已保存，当前启用项未切换。";
     if (unchanged) {
       input.value = "";
-      editAiProfile(data.profile_id, false, true);
-      result.textContent = data.profile_id === data.ai_providers.active_profile_id ? "配置已保存并启用，将用于新开始的分析。" : "配置已保存，当前启用项未切换。";
+      showSettingsPage("ai");
     } else if (editorVersion === aiEditorVersion) {
       // Keep edits typed while saving, and attach a newly created draft to its
       // saved ID so a retry updates it rather than adding another profile.
@@ -1486,7 +1499,9 @@ async function updateAiProvider(event) {
       applyAiProfiles(data.ai_providers);
       result.textContent = "已保存提交时的内容。当前编辑内容有变更，请再次保存。";
     }
-    showToast(data.message);
+    $("#ai-profiles-result").textContent = savedMessage;
+    $("#ai-profiles-result").classList.remove("setting-error");
+    showToast(savedMessage);
   } catch (error) {
     if (stillEditing()) {
       result.textContent = error.message;
@@ -1602,7 +1617,7 @@ async function loadMoreDashboardContent(event) {
 
 function bindEvents() {
   $$('[data-settings-page]').forEach(button => button.addEventListener("click", () => showSettingsPage(button.dataset.settingsPage)));
-  $("#back-to-settings").addEventListener("click", () => showSettingsPage());
+  $("#back-to-settings").addEventListener("click", () => showSettingsPage(state.settingsPage === "ai-profile" ? "ai" : null));
   $("#preview-cache").addEventListener("click", async () => {
     try {
       const data = await api("/api/cache/preview?days=30");
@@ -1685,6 +1700,7 @@ function bindEvents() {
   $("#douyin-login-modal").addEventListener("click", (event) => { if (event.target.id === "douyin-login-modal") closeDouyinLoginModal(); });
   $("#api-key-form").addEventListener("submit", updateAiProvider);
   $("#ai-profile-new").addEventListener("click", () => editAiProfile());
+  $("#ai-profile-cancel").addEventListener("click", () => showSettingsPage("ai"));
   $("#ai-profiles-list").addEventListener("change", event => {
     const profileId = event.target.dataset.aiActivate;
     if (profileId && event.target.checked) changeAiProfile(profileId, "activate");

@@ -20,6 +20,7 @@ function setup() {
   h.n = selector => h.nodes.get(selector);
   h.submit = {};
   h.n('#api-key-form').querySelector = () => h.submit;
+  h.state.currentView = 'settings';
   h.context.applyAiProfiles(catalog());
   h.context.editAiProfile('a');
   h.save = () => h.context.updateAiProvider({preventDefault() {}});
@@ -29,14 +30,41 @@ function lastRequest(h) { return h.requests.at(-1); }
 function body(h) { return JSON.parse(lastRequest(h).options.body); }
 
 (async () => {
+  await check('AI settings opens the list; plus opens a separate editor; back navigates one level', async () => {
+    const h = setup();
+    h.context.showSettingsPage('ai');
+    assert.equal(h.n('#ai-profiles-page').hidden, false);
+    assert.equal(h.n('#ai-profile-editor-page').hidden, true);
+    assert.equal(h.n('#view-title').textContent, 'AI 接入');
+    assert.equal(h.n('#back-to-settings').textContent, '← 全部设置');
+    assert.match(html, /id="ai-profile-new"[^>]*aria-label="新增 AI 配置"[^>]*>[\s\S]*?<svg/);
+    h.n('#ai-profile-new').listeners.get('click')();
+    assert.equal(h.state.settingsPage, 'ai-profile');
+    assert.equal(h.n('#ai-profiles-page').hidden, true);
+    assert.equal(h.n('#ai-profile-editor-page').hidden, false);
+    assert.equal(h.n('#view-title').textContent, '新增配置');
+    assert.equal(h.n('#back-to-settings').textContent, '← AI 接入');
+    h.n('#api-key-input').value = 'unsaved-key';
+    h.n('#back-to-settings').listeners.get('click')();
+    assert.equal(h.state.settingsPage, 'ai');
+    assert.equal(h.n('#api-key-input').value, '');
+    h.n('#back-to-settings').listeners.get('click')();
+    assert.equal(h.n('#settings-index').hidden, false);
+    assert.equal(h.n('#settings-detail').hidden, true);
+    assert.equal(h.requests.length, 0);
+  });
+
   await check('saved profiles render and edit without activating; keys are cleared between editors', async () => {
     const h = setup();
+    h.context.showSettingsPage('ai');
     assert.match(h.n('#ai-profiles-list').innerHTML, /role="switch"/);
     assert.match(h.n('#ai-key-status').textContent, /日常分析/);
-    assert.equal(h.n('#ai-profile-activate').disabled, true);
     h.n('#api-key-input').value = 'private-draft';
     const edit = {disabled: false, dataset: {aiAction: 'edit', profileId: 'b'}};
     h.n('#ai-profiles-list').listeners.get('click')({target: {closest: () => edit}});
+    assert.equal(h.n('#ai-profile-editor-page').hidden, false);
+    assert.equal(h.n('#ai-profiles-page').hidden, true);
+    assert.equal(h.n('#view-title').textContent, '编辑：视频实验');
     assert.equal(h.n('#ai-profile-name').value, '视频实验');
     assert.equal(h.n('#ai-model').value, 'text-b');
     assert.equal(h.n('#api-key-input').value, '');
@@ -58,7 +86,9 @@ function body(h) { return JSON.parse(lastRequest(h).options.body); }
     await pending;
     assert.equal(h.n('#api-key-input').value, '');
     assert.equal(h.n('#ai-model').value, 'text-c');
-    assert.match(h.n('#api-key-result').textContent, /当前启用项未切换/);
+    assert.match(h.n('#ai-profiles-result').textContent, /当前启用项未切换/);
+    assert.equal(h.state.settingsPage, 'ai');
+    assert.equal(h.n('#ai-profile-editor-page').hidden, true);
     assert.match(h.n('#ai-key-status').textContent, /日常分析/);
     assert.equal(h.submit.disabled, false);
   });
@@ -76,7 +106,8 @@ function body(h) { return JSON.parse(lastRequest(h).options.body); }
     const copy = {...second, id: 'c', name: '视频实验 副本'};
     lastRequest(h).resolve(response([first, second, copy], 'a', 'c'));
     await pending;
-    assert.equal(h.context.aiProviderDraft().profile_id, 'c');
+    assert.equal(h.state.settingsPage, 'ai');
+    assert.match(h.n('#ai-profiles-list').innerHTML, /data-profile-id="c"/);
     h.n('#ai-profile-new').listeners.get('click')();
     assert.equal(h.n('#ai-profile-name').value, '');
     assert.equal(h.n('#ai-model').value, '');
@@ -198,7 +229,7 @@ function body(h) { return JSON.parse(lastRequest(h).options.body); }
     assert.equal(lastRequest(h).options.method, 'PUT');
     lastRequest(h).resolve(response([first, second, {...saved, name: '保存期间修改的名字'}], 'c', 'c'));
     await pending;
-    assert.match(h.n('#api-key-result').textContent, /保存并启用/);
+    assert.match(h.n('#ai-profiles-result').textContent, /保存并启用/);
   });
 
   await check('failed saves preserve the draft key; failed model reads preserve choices', async () => {
@@ -209,6 +240,8 @@ function body(h) { return JSON.parse(lastRequest(h).options.body); }
     await pending;
     assert.equal(h.n('#api-key-input').value, 'retry-secret');
     assert.equal(h.n('#api-key-result').textContent, 'could not save');
+    assert.equal(h.state.settingsPage, 'ai-profile');
+    assert.equal(h.n('#ai-profile-editor-page').hidden, false);
     assert.equal(h.submit.disabled, false);
     const choices = h.n('#ai-model').innerHTML;
     pending = h.context.probeAiProvider(true);
@@ -241,15 +274,34 @@ function body(h) { return JSON.parse(lastRequest(h).options.body); }
     assert.equal(h.n('#ai-model').disabled, true);
   });
 
-  await check('deleting an inactive editor returns to the active profile', async () => {
+  await check('deleting an inactive editor returns to the profile list', async () => {
     const h = setup();
     h.context.editAiProfile('b');
     const pending = h.context.changeAiProfile('b', 'delete');
     assert.equal(lastRequest(h).options.method, 'DELETE');
     lastRequest(h).resolve(response([first], 'a', null));
     await pending;
-    assert.equal(h.context.aiProviderDraft().profile_id, 'a');
+    assert.equal(h.state.settingsPage, 'ai');
     assert.doesNotMatch(h.n('#ai-profiles-list').innerHTML, /视频实验/);
+  });
+
+  await check('cancelled tests and saves cannot reopen the editor after returning to the list', async () => {
+    for (const operation of ['test', 'save']) {
+      const h = setup();
+      h.n('#api-key-input').value = 'temporary-key';
+      const pending = operation === 'test' ? h.context.probeAiProvider(true) : h.save();
+      const request = lastRequest(h);
+      h.n('#ai-profile-cancel').listeners.get('click')();
+      assert.equal(h.state.settingsPage, 'ai');
+      assert.equal(h.n('#api-key-input').value, '');
+      request.resolve(operation === 'test' ? {models: ['stale-model']} : response());
+      await pending;
+      assert.equal(h.state.settingsPage, 'ai');
+      assert.equal(h.n('#ai-profile-editor-page').hidden, true);
+      assert.equal(h.n('#ai-profiles-page').hidden, false);
+      assert.equal(h.submit.disabled, false);
+      assert.doesNotMatch(h.n('#ai-model').innerHTML, /stale-model/);
+    }
   });
 
   await check('names, providers and model IDs are escaped in profile cards and dropdowns', async () => {
