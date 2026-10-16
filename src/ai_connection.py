@@ -13,9 +13,9 @@ TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2j
 
 
 def test_provider_connection(api_url: str, model: str, api_key: str = "", *,
-                             vision_enabled: bool = False, vision_model: str = "") -> dict:
+                             vision_enabled: bool = False, vision_model: str = "", profile_id: str | None = None) -> dict:
     api_url = normalize_api_url(api_url)
-    key = resolve_provider_key(api_url, api_key)
+    key = resolve_provider_key(api_url, api_key, profile_id=profile_id)
     model, vision_model = model.strip(), vision_model.strip() or model.strip()
     if not model or any(ord(char) < 32 for char in model + vision_model):
         raise ValueError("请填写有效的模型名称")
@@ -40,9 +40,9 @@ def test_provider_connection(api_url: str, model: str, api_key: str = "", *,
     return {"success": True, "message": "连接成功，文字模型" + ("和图片输入均" if vision_enabled else "已") + "通过实际生成测试。请保存设置后使用。", "checks": results}
 
 
-def list_provider_models(api_url: str, api_key: str = "") -> dict:
+def list_provider_models(api_url: str, api_key: str = "", *, profile_id: str | None = None) -> dict:
     api_url = normalize_api_url(api_url)
-    key = resolve_provider_key(api_url, api_key)
+    key = resolve_provider_key(api_url, api_key, profile_id=profile_id)
     try:
         response = requests.get(api_url.removesuffix("/chat/completions") + "/models",
                                 headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},

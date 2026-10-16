@@ -1154,8 +1154,8 @@ async function loadSettings() {
   try {
     const data = await api("/api/settings");
     await loadTaskStatus();
-    fillAiProviderForm(data.ai_provider || {});
-    renderAiKeyStatus(data.ai_provider || {});
+    applyAiProfiles(data.ai_providers || { profiles: [], active_profile_id: null });
+    editAiProfile(aiProfiles.active_profile_id, false, false, data.ai_provider || {});
     fillVideoAnalysisForm(data.video_analysis || {});
     await loadMediaKnowledge();
     const current = data.interval_hours;
@@ -1253,15 +1253,101 @@ function renderAiKeyStatus(provider) {
   const element = $("#ai-key-status");
   element.classList.toggle("setting-error", Boolean(status.needs_reconfigure));
   if (status.needs_reconfigure) {
-    element.textContent = "旧版 AI 密钥无法解密，请重新输入并保存。保存后会覆盖旧凭证。";
+    element.textContent = "当前启用配置的密钥无法读取，请编辑这套配置并重新保存 API Key。";
   } else if (status.configured) {
-    element.textContent = `已保存 ${provider.model || "AI 简报模型"} 的接入设置。请用“测试连接”确认模型可用。密钥内容不会显示。`;
+    element.textContent = `当前启用：${provider.name || "原有配置"} · 文字模型 ${provider.model || "未选择"}${provider.vision_enabled ? ` · 视觉模型 ${provider.vision_model || provider.model}` : ""}。`;
   } else {
     element.textContent = "尚未配置 AI 密钥，AI 简报暂时无法生成。";
   }
 }
 
 let aiModelCatalog = { apiUrl: "", models: [] };
+let aiProfiles = { profiles: [], active_profile_id: null };
+let aiEditingProfileId = null;
+let aiSourceProfileId = null;
+let aiEditorVersion = 0;
+let aiFormBusy = false;
+let aiProfilesBusy = false;
+
+function renderAiProfiles() {
+  $("#ai-profiles-list").innerHTML = aiProfiles.profiles.length ? aiProfiles.profiles.map(profile => {
+    const active = profile.id === aiProfiles.active_profile_id;
+    const keyStatus = profile.api_key?.configured ? "密钥已保存" : "密钥需要重新配置";
+    return `<article class="ai-profile-card${active ? " is-active" : ""}${profile.id === aiEditingProfileId ? " is-editing" : ""}">
+      <div class="ai-profile-card-heading"><div><strong>${escapeHtml(profile.name)}</strong><div class="ai-profile-provider">${escapeHtml(profile.provider_name)}</div></div>
+        <label class="ai-profile-switch"><input type="checkbox" role="switch" data-ai-activate="${escapeHtml(profile.id)}" aria-label="启用 ${escapeHtml(profile.name)}" ${active ? "checked" : ""} ${active || aiProfilesBusy ? "disabled" : ""}><span>${active ? "已启用" : "启用"}</span></label></div>
+      <div class="ai-profile-details"><p>${escapeHtml(profile.api_url)}</p><p>文字：${escapeHtml(profile.model)}</p><p>画面：${profile.vision_enabled ? escapeHtml(profile.vision_model || profile.model) : "未启用"} · ${keyStatus}</p></div>
+      <div class="ai-profile-actions"><button type="button" class="text-button" data-ai-action="edit" data-profile-id="${escapeHtml(profile.id)}">编辑</button>
+        <button type="button" class="text-button" data-ai-action="copy" data-profile-id="${escapeHtml(profile.id)}">复制</button>
+        <button type="button" class="text-button ai-profile-delete" data-ai-action="delete" data-profile-id="${escapeHtml(profile.id)}" ${active || aiProfilesBusy ? "disabled" : ""} ${active ? 'title="请先启用另一套配置再删除"' : ""}>删除</button></div></article>`;
+  }).join("") : '<div class="empty-state">还没有保存的配置，先添加一套 AI 接入。</div>';
+}
+
+function applyAiProfiles(catalog) {
+  aiProfiles = catalog;
+  renderAiProfiles();
+  const active = aiProfiles.profiles.find(profile => profile.id === aiProfiles.active_profile_id);
+  renderAiKeyStatus(active || {});
+  const toggle = $("#ai-profile-activate");
+  const editingActive = Boolean(aiEditingProfileId && aiEditingProfileId === aiProfiles.active_profile_id);
+  if (editingActive || toggle.disabled) toggle.checked = editingActive;
+  toggle.disabled = editingActive;
+  if (aiEditingProfileId) $("#ai-profile-editor-help").textContent = editingActive
+    ? "正在编辑当前启用项，保存后用于新开始的分析。"
+    : "保存不会切换当前接口；也可勾选“保存后启用”。";
+}
+
+function editAiProfile(profileId = null, copy = false, preserveModels = false, defaults = {}) {
+  const profile = profileId ? aiProfiles.profiles.find(item => item.id === profileId) : defaults;
+  if (!profile) return;
+  aiEditingProfileId = copy ? null : profileId;
+  aiSourceProfileId = copy ? profileId : null;
+  aiEditorVersion += 1;
+  if (!preserveModels) resetAiModelChoices();
+  fillAiProviderForm(profile);
+  $("#ai-profile-name").value = copy ? `${profile.name} 副本`.slice(0, 80) : profileId ? profile.name : "";
+  $("#ai-provider-name").value = profile.provider_name || "";
+  $("#api-key-input").value = "";
+  $("#api-key-input").placeholder = profileId ? "留空保留已保存的 Key" : "输入这套配置的 API Key";
+  const active = Boolean(!copy && profileId && profileId === aiProfiles.active_profile_id);
+  $("#ai-profile-activate").checked = active || !aiProfiles.active_profile_id;
+  $("#ai-profile-activate").disabled = active;
+  $("#ai-profile-editor-title").textContent = copy ? "复制配置" : profileId ? `编辑：${profile.name}` : "新增配置";
+  $("#ai-profile-editor-help").textContent = copy ? "已复制接口与模型，Key 留空可沿用；更换接口地址时请填写新 Key。" : active ? "正在编辑当前启用项，保存后用于新开始的分析。" : "保存不会切换当前接口；也可勾选“保存后启用”。";
+  ["#ai-test-result", "#api-key-result"].forEach(selector => {
+    $(selector).textContent = "";
+    $(selector).classList.remove("setting-error");
+  });
+  renderAiProfiles();
+}
+
+function refreshAiButtons() {
+  ["#ai-test-connection", "#ai-read-models"].forEach(selector => { $(selector).disabled = aiFormBusy; });
+  $("#api-key-form").querySelector("button[type=submit]").disabled = aiFormBusy || aiProfilesBusy;
+  renderAiProfiles();
+}
+
+async function changeAiProfile(profileId, action) {
+  if (aiProfilesBusy) return;
+  aiProfilesBusy = true;
+  refreshAiButtons();
+  const result = $("#ai-profiles-result");
+  result.classList.remove("setting-error");
+  result.textContent = action === "activate" ? "正在切换配置…" : "正在删除配置…";
+  try {
+    const data = await api(`/api/settings/ai-providers/${encodeURIComponent(profileId)}${action === "activate" ? "/activate" : ""}`, { method: action === "activate" ? "POST" : "DELETE" });
+    applyAiProfiles(data.ai_providers);
+    if (action === "delete" && (aiEditingProfileId === profileId || aiSourceProfileId === profileId)) editAiProfile(aiProfiles.active_profile_id);
+    result.textContent = data.message;
+    showToast(data.message);
+  } catch (error) {
+    result.textContent = error.message;
+    result.classList.add("setting-error");
+  } finally {
+    aiProfilesBusy = false;
+    refreshAiButtons();
+  }
+}
 
 function aiModelServiceUrl(value) {
   try {
@@ -1303,6 +1389,7 @@ function fillAiProviderForm(provider) {
 
 function aiProviderDraft() {
   return {
+    profile_id: aiEditingProfileId || aiSourceProfileId,
     api_url: $("#ai-api-url").value.trim(), model: $("#ai-model").value.trim(),
     api_key: $("#api-key-input").value.trim(),
     vision_enabled: $("#ai-vision-enabled").checked,
@@ -1311,7 +1398,9 @@ function aiProviderDraft() {
 }
 
 async function probeAiProvider(readModels = false) {
+  if (aiFormBusy) return;
   const draft = aiProviderDraft();
+  const editorVersion = aiEditorVersion;
   const result = $("#ai-test-result");
   result.classList.remove("setting-error");
   if (!draft.api_url || (!readModels && !draft.model)) {
@@ -1319,13 +1408,19 @@ async function probeAiProvider(readModels = false) {
     result.classList.add("setting-error");
     return;
   }
-  const buttons = [$("#ai-test-connection"), $("#ai-read-models"), $("#api-key-form").querySelector("button[type=submit]")];
-  buttons.forEach(button => { button.disabled = true; });
+  if (!draft.api_key && !draft.profile_id) {
+    result.textContent = "请填写新配置的 API Key，或从已有配置复制。";
+    result.classList.add("setting-error");
+    return;
+  }
+  aiFormBusy = true;
+  refreshAiButtons();
   result.textContent = readModels ? "正在读取可用模型…" : "正在测试实际生成，请稍候…";
   try {
     const data = await api(`/api/settings/ai-provider/${readModels ? "models" : "test"}`, {
-      method: "POST", body: JSON.stringify(readModels ? { api_url: draft.api_url, api_key: draft.api_key } : draft),
+      method: "POST", body: JSON.stringify(readModels ? { api_url: draft.api_url, api_key: draft.api_key, profile_id: draft.profile_id } : draft),
     });
+    if (editorVersion !== aiEditorVersion) return;
     if (JSON.stringify(aiProviderDraft()) !== JSON.stringify(draft)) {
       result.textContent = "测试期间设置已变更，请使用当前设置重新测试。";
       return;
@@ -1338,41 +1433,70 @@ async function probeAiProvider(readModels = false) {
       result.textContent = `${data.message} ${data.checks.map(check => `${check.mode === "vision" ? "图片" : "文字"}：${check.model}（${(check.elapsed_ms / 1000).toFixed(1)} 秒）`).join("；")}`;
     }
   } catch (error) {
+    if (editorVersion !== aiEditorVersion) return;
+    if (JSON.stringify(aiProviderDraft()) !== JSON.stringify(draft)) {
+      result.textContent = "测试期间设置已变更，请使用当前设置重新测试。";
+      return;
+    }
     result.textContent = error.message;
     result.classList.add("setting-error");
   } finally {
-    buttons.forEach(button => { button.disabled = false; });
+    aiFormBusy = false;
+    refreshAiButtons();
   }
 }
 
 async function updateAiProvider(event) {
   event.preventDefault();
+  if (aiFormBusy || aiProfilesBusy) return;
   const input = $("#api-key-input");
-  const button = event.currentTarget.querySelector("button[type=submit]");
   const result = $("#api-key-result");
-  const apiUrl = $("#ai-api-url").value.trim();
-  const model = $("#ai-model").value.trim();
-  if (!apiUrl || !model) {
-    result.textContent = "请填写接口 URL，读取可用模型并选择文字模型。";
+  const draft = aiProviderDraft();
+  const editorVersion = aiEditorVersion;
+  const fields = { name: $("#ai-profile-name").value.trim(), provider_name: $("#ai-provider-name").value.trim(), activate: $("#ai-profile-activate").checked };
+  const stillEditing = () => editorVersion === aiEditorVersion && JSON.stringify(aiProviderDraft()) === JSON.stringify(draft)
+    && fields.name === $("#ai-profile-name").value.trim() && fields.provider_name === $("#ai-provider-name").value.trim() && fields.activate === $("#ai-profile-activate").checked;
+  if (!draft.api_url || !draft.model || !fields.name) {
+    result.textContent = "请填写配置名称、接口 URL，读取可用模型并选择文字模型。";
     result.classList.add("setting-error");
     return;
   }
-  button.disabled = true;
+  aiFormBusy = true;
+  aiProfilesBusy = true;
+  refreshAiButtons();
   result.classList.remove("setting-error");
   result.textContent = "正在保存 AI 接入设置…";
   try {
-    const data = await api("/api/settings/ai-provider", { method: "PUT", body: JSON.stringify(aiProviderDraft()) });
-    input.value = "";
-    result.textContent = data.message;
-    fillAiProviderForm(data.ai_provider);
-    renderAiKeyStatus(data.ai_provider);
-    showToast("AI 接入设置已更新");
+    const { profile_id, ...access } = draft;
+    const data = await api(`/api/settings/ai-providers${aiEditingProfileId ? `/${encodeURIComponent(aiEditingProfileId)}` : ""}`, {
+      method: aiEditingProfileId ? "PUT" : "POST", body: JSON.stringify({ ...access, ...fields, source_profile_id: aiSourceProfileId }),
+    });
+    const unchanged = stillEditing();
+    applyAiProfiles(data.ai_providers);
+    if (unchanged) {
+      input.value = "";
+      editAiProfile(data.profile_id, false, true);
+      result.textContent = data.profile_id === data.ai_providers.active_profile_id ? "配置已保存并启用，将用于新开始的分析。" : "配置已保存，当前启用项未切换。";
+    } else if (editorVersion === aiEditorVersion) {
+      // Keep edits typed while saving, and attach a newly created draft to its
+      // saved ID so a retry updates it rather than adding another profile.
+      aiEditingProfileId = data.profile_id;
+      aiSourceProfileId = null;
+      if (input.value.trim() === draft.api_key) input.value = "";
+      applyAiProfiles(data.ai_providers);
+      result.textContent = "已保存提交时的内容。当前编辑内容有变更，请再次保存。";
+    }
+    showToast(data.message);
   } catch (error) {
-    result.textContent = error.message;
-    result.classList.add("setting-error");
+    if (stillEditing()) {
+      result.textContent = error.message;
+      result.classList.add("setting-error");
+    }
     showToast(error.message, true);
   } finally {
-    button.disabled = false;
+    aiFormBusy = false;
+    aiProfilesBusy = false;
+    refreshAiButtons();
   }
 }
 
@@ -1560,6 +1684,17 @@ function bindEvents() {
   $("#close-douyin-login-modal").addEventListener("click", closeDouyinLoginModal);
   $("#douyin-login-modal").addEventListener("click", (event) => { if (event.target.id === "douyin-login-modal") closeDouyinLoginModal(); });
   $("#api-key-form").addEventListener("submit", updateAiProvider);
+  $("#ai-profile-new").addEventListener("click", () => editAiProfile());
+  $("#ai-profiles-list").addEventListener("change", event => {
+    const profileId = event.target.dataset.aiActivate;
+    if (profileId && event.target.checked) changeAiProfile(profileId, "activate");
+  });
+  $("#ai-profiles-list").addEventListener("click", event => {
+    const button = event.target.closest("button[data-ai-action]");
+    if (!button || button.disabled) return;
+    if (button.dataset.aiAction === "delete") changeAiProfile(button.dataset.profileId, "delete");
+    else editAiProfile(button.dataset.profileId, button.dataset.aiAction === "copy");
+  });
   $("#video-analysis-form").addEventListener("submit", updateVideoAnalysis);
   $("#test-video-input").addEventListener("click", testVideoInput);
   $("#media-knowledge-form").addEventListener("submit", addMediaKnowledge);

@@ -56,6 +56,31 @@
 .settings-section-title { margin: 30px 0 16px; padding-top: 24px; border-top: 1px solid #e2e8f0; font-size: max(18px, calc(var(--ui-font-size) + 2px)); font-weight: 700; line-height: 1.5; }
 #view-settings .settings-section-title + .api-key-form { margin-top: 0; }
 #ai-key-status { padding: 12px 16px; border-left: 3px solid #356df3; border-radius: 0 8px 8px 0; background: #f0f5ff; }
+.ai-profiles-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 24px 0 14px; }
+.ai-profiles-heading h4 { margin: 0; font-size: 18px; }
+.ai-profiles-list { display: grid; gap: 14px; }
+.ai-profile-card { padding: 18px; border: 1px solid #d7dfe9; border-radius: 12px; background: #fff; min-width: 0; }
+.ai-profile-card.is-active { border-color: #7399ee; background: #f5f8ff; }
+.ai-profile-card.is-editing { box-shadow: 0 0 0 2px #dce6fc; }
+.ai-profile-card-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.ai-profile-card-heading strong { font-size: 18px; overflow-wrap: anywhere; }
+.ai-profile-provider { margin-top: 4px; color: var(--settings-secondary); font-size: var(--settings-help-size); overflow-wrap: anywhere; }
+.ai-profile-switch { display: flex; align-items: center; gap: 8px; white-space: nowrap; font-weight: 600; cursor: pointer; }
+#view-settings .ai-profile-switch input { appearance: none; width: 40px; height: 24px; margin: 0; border: 1px solid #7d8da5; border-radius: 14px; background: #8491a5; position: relative; cursor: pointer; }
+#view-settings .ai-profile-switch input::before { content: ""; position: absolute; width: 18px; height: 18px; top: 2px; left: 2px; border-radius: 50%; background: #fff; transition: transform .15s; }
+#view-settings .ai-profile-switch input:checked { background: #2454cb; border-color: #2454cb; }
+#view-settings .ai-profile-switch input:checked::before { transform: translateX(16px); }
+#view-settings .ai-profile-switch input:disabled { cursor: default; opacity: 1; }
+.ai-profile-details { margin: 12px 0 8px; color: var(--settings-secondary); font-size: var(--settings-help-size); line-height: 1.8; overflow-wrap: anywhere; }
+.ai-profile-details p { margin: 2px 0; }
+.ai-profile-actions { display: flex; gap: 16px; flex-wrap: wrap; }
+.ai-profile-actions .text-button { padding: 0; }
+#view-settings .ai-profile-actions .ai-profile-delete { color: #a32b24; }
+#view-settings .ai-profile-actions button:disabled { color: #68758b; cursor: default; }
+@media (max-width: 420px) {
+  .ai-profile-card { padding: 14px; }
+  .ai-profile-card-heading { flex-wrap: wrap; }
+}
 #view-settings .font-setting-heading strong, #view-settings .font-setting-heading output { font-size: var(--settings-size); }
 #view-settings .font-setting-heading output { color: #2454cb; font-weight: 600; }
 #view-settings .font-setting input[type="range"] { height: 40px; margin: 0; }

@@ -37,7 +37,10 @@ from src.accounts.zhihu_account import get_zhihu_account_status, logout_zhihu
 from src.accounts.xiaohongshu_account import get_account_status as get_xhs_status, logout as logout_xhs, normalize_cookie as normalize_xhs_cookie, save_cookie as save_xhs_cookie
 from src.accounts.douyin_account import get_account_status as get_douyin_status, logout as logout_douyin, normalize_cookie as normalize_douyin_cookie, save_cookie as save_douyin_cookie
 from src.platforms.douyin_status import public_source_status as douyin_source_status
-from src.ai_provider import effective_provider_config, provider_payload, save_provider_settings
+from src.ai_provider import (
+    effective_provider_config, provider_payload, provider_profiles_payload, save_provider_settings,
+    save_provider_profile, activate_provider_profile, delete_provider_profile,
+)
 from src.ai_connection import list_provider_models, test_provider_connection
 from src.processors.video_analysis_config import load_settings as load_video_settings, save_settings as save_video_settings, validate_settings as validate_video_settings
 from src.processors.media_knowledge import MediaKnowledge, save_entries, append_entries
@@ -207,12 +210,20 @@ class ApiKeyUpdate(BaseModel):
 class AiProviderAccess(BaseModel):
     api_url: str = Field(min_length=1, max_length=2048)
     api_key: str = Field(default="", max_length=8192)
+    profile_id: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class AiProviderUpdate(AiProviderAccess):
     model: str = Field(min_length=1, max_length=200)
     vision_enabled: bool = False
     vision_model: str = Field(default="", max_length=200)
+
+
+class AiProfileUpdate(AiProviderUpdate):
+    name: str = Field(min_length=1, max_length=80)
+    provider_name: str = Field(default="自定义服务", max_length=80)
+    source_profile_id: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    activate: bool = False
 
 
 class QrStatusRequest(BaseModel):
@@ -903,6 +914,7 @@ def settings() -> dict:
         "check_history": list_checks(limit=100),
         "scheduler": _scheduler_status(),
         "ai_provider": provider_payload(),
+        "ai_providers": provider_profiles_payload(),
         "video_analysis": load_video_settings(),
     }
 
@@ -919,6 +931,47 @@ def update_ai_provider(payload: AiProviderUpdate) -> dict:
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail="AI 设置保存失败，请检查配置文件和凭证存储") from exc
     return {"message": "AI 接入设置已保存，将用于下一次简报生成", "ai_provider": provider_payload()}
+
+
+@app.get("/api/settings/ai-providers")
+def read_ai_profiles() -> dict:
+    return provider_profiles_payload()
+
+
+def _change_ai_profiles(action, message):
+    try:
+        saved = action()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail="AI 配置修改失败，请检查配置文件和凭证存储") from exc
+    return {"message": message, "profile_id": saved["id"] if saved else None,
+            "ai_provider": provider_payload(), "ai_providers": provider_profiles_payload()}
+
+
+@app.post("/api/settings/ai-providers")
+def create_ai_profile(payload: AiProfileUpdate) -> dict:
+    return _change_ai_profiles(
+        lambda: save_provider_profile(**payload.model_dump(exclude={"profile_id"})), "AI 配置已保存",
+    )
+
+
+@app.put("/api/settings/ai-providers/{profile_id}")
+def edit_ai_profile(profile_id: str, payload: AiProfileUpdate) -> dict:
+    return _change_ai_profiles(
+        lambda: save_provider_profile(**payload.model_dump(exclude={"profile_id", "source_profile_id"}), profile_id=profile_id),
+        "AI 配置已保存",
+    )
+
+
+@app.post("/api/settings/ai-providers/{profile_id}/activate")
+def activate_ai_profile(profile_id: str) -> dict:
+    return _change_ai_profiles(lambda: activate_provider_profile(profile_id), "已切换 AI 配置，将用于新开始的分析")
+
+
+@app.delete("/api/settings/ai-providers/{profile_id}")
+def delete_ai_profile(profile_id: str) -> dict:
+    return _change_ai_profiles(lambda: delete_provider_profile(profile_id), "AI 配置已删除")
 
 
 @app.put("/api/settings/video-analysis")

@@ -4,6 +4,8 @@ import io
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -285,3 +287,196 @@ class AiProviderTests(unittest.TestCase):
         with patch.object(ai_connection.requests, "get", return_value=Mock(status_code=302)):
             result = self.client.post("/api/settings/ai-provider/models", headers={"X-Cyber-Request": "1"}, json={"api_url": "https://draft.example/v1", "api_key": "list-secret"})
         self.assertEqual(result.status_code, 502)
+
+
+class AiProfileTests(unittest.TestCase):
+    setUp = AiProviderTests.setUp
+    save = AiProviderTests.save
+
+    def create(self, **overrides):
+        data = {"name": "日常分析", "provider_name": "服务商 A", "api_url": "https://provider.example/v1",
+                "model": "text-a", "vision_enabled": True, "vision_model": "vision-a", "api_key": "secret-a"}
+        data.update(overrides)
+        return self.client.post("/api/settings/ai-providers", headers={"X-Cyber-Request": "1"}, json=data)
+
+    def activate(self, profile_id):
+        return self.client.post(f"/api/settings/ai-providers/{profile_id}/activate", headers={"X-Cyber-Request": "1"})
+
+    def delete(self, profile_id):
+        return self.client.delete(f"/api/settings/ai-providers/{profile_id}", headers={"X-Cyber-Request": "1"})
+
+    def edit(self, profile_id, **overrides):
+        profile = next(p for p in ai_provider.provider_profiles_payload()["profiles"] if p["id"] == profile_id)
+        data = {key: profile[key] for key in ("name", "provider_name", "api_url", "model", "vision_enabled", "vision_model")}
+        data.update(overrides)
+        return self.client.put(f"/api/settings/ai-providers/{profile_id}", headers={"X-Cyber-Request": "1"}, json=data)
+
+    def test_empty_catalog_does_not_write_configuration(self):
+        response = self.client.get("/api/settings/ai-providers", headers={"X-Cyber-Request": "1"})
+        self.assertEqual(response.json(), {"active_profile_id": None, "profiles": []})
+        self.assertFalse(self.config_path.exists())
+        self.assertFalse((self.root / "secrets").exists())
+
+    def test_multiple_providers_and_interfaces_can_be_saved_and_switched(self):
+        first = self.create().json()["profile_id"]
+        second = self.create(name="视频测试", provider_name="服务商 B", api_url="https://other.example/v1", api_key="secret-b").json()["profile_id"]
+        third = self.create(name="服务商 A 的备用接口", api_url="https://backup.example/v2", api_key="secret-c").json()["profile_id"]
+        self.assertEqual(ai_provider.provider_profiles_payload()["active_profile_id"], first)
+        self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().get_api_key(), "secret-a")
+        switched = self.activate(second)
+        self.assertEqual(switched.status_code, 200, switched.text)
+        self.assertEqual(switched.json()["ai_provider"]["id"], second)
+        self.assertEqual(len(switched.json()["ai_providers"]["profiles"]), 3)
+        self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().get_api_key(), "secret-b")
+        self.assertEqual(self.activate(third).status_code, 200)
+        self.assertEqual(self.activate(first).status_code, 200)
+        self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().vision_model, "vision-a")
+        self.assertNotIn("credential_id", switched.text)
+        self.assertNotIn("secret-", switched.text)
+        self.assertNotIn("secret-", self.config_path.read_text(encoding="utf-8"))
+
+    def test_same_url_profiles_keep_separate_keys_and_models(self):
+        first = self.create().json()["profile_id"]
+        second = self.create(name="另一个账号", model="text-b", api_key="secret-b").json()["profile_id"]
+        self.assertEqual(self.edit(second, model="text-c").status_code, 200)
+        self.assertEqual(ai_provider.provider_payload()["id"], first)
+        before = self.config_path.read_bytes()
+        with patch.object(deepseek_summarizer.DeepSeekSummarizer, "_call_api", return_value={"choices": [{"message": {"content": "ok"}}]}) as call:
+            response = self.client.post("/api/settings/ai-provider/test", headers={"X-Cyber-Request": "1"},
+                json={"api_url": "https://provider.example/v1", "model": "text-c", "profile_id": second})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(call.call_args.kwargs["api_key"], "secret-b")
+        self.assertEqual(self.config_path.read_bytes(), before)
+        response = Mock(ok=True, status_code=200)
+        response.json.return_value = {"data": [{"id": "text-c"}]}
+        with patch.object(ai_connection.requests, "get", return_value=response) as get:
+            response = self.client.post("/api/settings/ai-provider/models", headers={"X-Cyber-Request": "1"},
+                json={"api_url": "https://provider.example/v1", "profile_id": second})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer secret-b")
+        self.assertEqual(self.config_path.read_bytes(), before)
+
+    def test_legacy_config_remains_active_when_new_profile_is_added(self):
+        secret_store.save_secret("old_key", "old-secret")
+        legacy = {"api_url": "https://old.example/v1", "model": "old-text", "vision_enabled": True,
+                  "vision_model": "old-vision", "credential_id": "old_key"}
+        self.config_path.write_text(json.dumps(legacy), encoding="utf-8")
+        before = self.config_path.read_bytes()
+        self.assertEqual(self.client.get("/api/settings/ai-providers", headers={"X-Cyber-Request": "1"}).json()["active_profile_id"], "legacy")
+        self.assertEqual(self.config_path.read_bytes(), before)
+        response = self.create()
+        self.assertEqual(response.status_code, 200, response.text)
+        current = deepseek_summarizer.DeepSeekSummarizer()
+        self.assertEqual(current.model, "old-text")
+        self.assertEqual(current.vision_model, "old-vision")
+        self.assertEqual(current.get_api_key(), "old-secret")
+        self.assertEqual(len(response.json()["ai_providers"]["profiles"]), 2)
+
+    def test_legacy_environment_key_is_frozen_on_migration(self):
+        with patch.dict("os.environ", {"DEEPSEEK_API_URL": "https://old.example/v1", "DEEPSEEK_MODEL": "old-text", "DEEPSEEK_API_KEY": "old-secret"}):
+            self.assertEqual(self.activate("legacy").status_code, 200)
+        self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().get_api_key(), "old-secret")
+        with patch.dict("os.environ", {"DEEPSEEK_API_URL": "https://wrong.example/v1", "DEEPSEEK_API_KEY": "wrong-secret"}):
+            self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().get_api_key(), "old-secret")
+            self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().api_url, "https://old.example/v1/chat/completions")
+
+    def test_unconfigured_legacy_profile_does_not_inherit_another_key_later(self):
+        self.config_path.write_text(json.dumps({"api_url": "https://old.example/v1", "model": "old-text"}), encoding="utf-8")
+        response = self.create(activate=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        secret_store.save_secret("opencode_api_key", "unrelated-secret")
+        old = next(p for p in ai_provider.provider_profiles_payload()["profiles"] if p["id"] == "legacy")
+        self.assertFalse(old["api_key"]["configured"])
+        self.assertEqual(self.activate("legacy").status_code, 400)
+
+    def test_copy_keeps_source_key_but_changed_url_requires_new_key(self):
+        first = self.create().json()["profile_id"]
+        copied = self.create(name="副本", api_key="", source_profile_id=first)
+        self.assertEqual(copied.status_code, 200, copied.text)
+        copied_id = copied.json()["profile_id"]
+        self.assertNotEqual(first, copied_id)
+        self.assertEqual(ai_provider.resolve_provider_key("https://provider.example/v1", profile_id=copied_id), "secret-a")
+        before = self.config_path.read_bytes()
+        invalid = self.create(api_url="https://different.example/v1", api_key="", source_profile_id=first)
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(self.create(api_key="").status_code, 400)
+
+    def test_in_flight_snapshot_survives_switch_edit_and_delete(self):
+        first = self.create().json()["profile_id"]
+        snapshot = deepseek_summarizer.DeepSeekSummarizer(provider_config=ai_provider.effective_provider_config())
+        self.assertEqual(self.edit(first, api_key="replacement-secret").status_code, 200)
+        self.create(name="另一个", api_key="secret-b", activate=True)
+        self.assertEqual(self.delete(first).status_code, 200)
+        self.assertEqual(snapshot.get_api_key(), "secret-a")
+        self.assertEqual(snapshot.model, "text-a")
+        self.assertEqual(deepseek_summarizer.DeepSeekSummarizer().get_api_key(), "secret-b")
+
+    def test_active_profile_cannot_be_deleted_and_failed_switch_preserves_active(self):
+        first = self.create().json()["profile_id"]
+        second = self.create(name="备用").json()["profile_id"]
+        self.assertEqual(self.delete(first).status_code, 400)
+        saved = ai_provider.load_provider_config()
+        credential = next(p["credential_id"] for p in saved["profiles"] if p["id"] == second)
+        (self.root / "secrets" / f"{credential}.dpapi.json").unlink()
+        before = self.config_path.read_bytes()
+        self.assertEqual(self.activate(second).status_code, 400)
+        self.assertEqual(self.activate("missing").status_code, 400)
+        self.assertEqual(self.delete("missing").status_code, 400)
+        self.assertEqual(self.config_path.read_bytes(), before)
+
+    def test_failed_create_and_legacy_migration_roll_back_credentials(self):
+        with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "legacy-secret"}):
+            with patch.object(ai_provider, "atomic_json", side_effect=OSError("read-only")):
+                response = self.create()
+            self.assertEqual(response.status_code, 500)
+            self.assertFalse(self.config_path.exists())
+            self.assertEqual(list((self.root / "secrets").glob("*.json")), [])
+            with patch.object(ai_provider, "atomic_json", side_effect=OSError("read-only")):
+                response = self.activate("legacy")
+            self.assertEqual(response.status_code, 500)
+            self.assertFalse(self.config_path.exists())
+            self.assertEqual(list((self.root / "secrets").glob("*.json")), [])
+
+    def test_corrupt_catalog_is_never_overwritten(self):
+        for data in [{"version": 2}, {"version": 99, "profiles": []}, {"version": 2, "profiles": {}, "active_profile_id": None},
+                     {"version": 2, "profiles": [], "active_profile_id": "missing"}]:
+            with self.subTest(data=data):
+                self.config_path.write_text(json.dumps(data), encoding="utf-8")
+                before = self.config_path.read_bytes()
+                self.assertEqual(self.create().status_code, 500)
+                self.assertEqual(self.config_path.read_bytes(), before)
+                with self.assertRaises(RuntimeError):
+                    ai_provider.effective_provider_config()
+
+    def test_legacy_save_updates_only_active_profile_and_takes_one_lock(self):
+        first = self.create().json()["profile_id"]
+        second = self.create(name="备用").json()["profile_id"]
+        held = False
+
+        @contextmanager
+        def single_lock(_path):
+            nonlocal held
+            self.assertFalse(held, "cross-process lock must not be acquired recursively")
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+        with patch.object(ai_provider, "interprocess_lock", side_effect=single_lock):
+            response = self.save(model="updated-text", api_key="")
+        self.assertEqual(response.status_code, 200, response.text)
+        catalog = ai_provider.provider_profiles_payload()
+        self.assertEqual(catalog["active_profile_id"], first)
+        self.assertEqual(len(catalog["profiles"]), 2)
+        self.assertEqual(next(p["model"] for p in catalog["profiles"] if p["id"] == second), "text-a")
+
+    def test_concurrent_saves_do_not_lose_profiles(self):
+        def save_profile(index):
+            return ai_provider.save_provider_profile("https://provider.example/v1", f"model-{index}", f"secret-{index}", name=f"配置 {index}")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            saved = list(pool.map(save_profile, range(8)))
+        catalog = ai_provider.provider_profiles_payload()
+        self.assertEqual({p["id"] for p in catalog["profiles"]}, {p["id"] for p in saved})
+        self.assertEqual(len([p for p in catalog["profiles"] if p["active"]]), 1)

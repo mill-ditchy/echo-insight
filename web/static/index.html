@@ -7,7 +7,7 @@
   <title>赛博情报局</title>
   <link rel="stylesheet" href="/static/styles.css?v=20261012-android-layout">
   <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
-  <link rel="stylesheet" href="/static/settings.css?v=20261012-settings-pages">
+  <link rel="stylesheet" href="/static/settings.css?v=20261016-ai-profiles">
   <link rel="stylesheet" href="/static/video-lab.css?v=20261016">
   <!-- companion-styles -->
 </head>
@@ -240,11 +240,24 @@
             <button class="text-button reset-font-button" id="reset-font-settings" type="button">恢复默认大小</button>
           </div>
           <div class="panel settings-panel ai-settings-panel" data-settings-panel="ai" hidden>
-            <div class="panel-title"><h3>AI 接入</h3><span>自定义服务与模型</span></div>
-            <p class="setting-help">填写服务地址和 API Key，读取可用模型后选择文字与视觉模型，测试连接后保存。支持兼容 Chat Completions 的服务。</p>
+            <div class="panel-title"><h3>AI 接入</h3><span>保存多套配置，随时切换</span></div>
+            <p class="setting-help">可保存多个供应商、接口和模型组合。打开对应配置的开关即可切换，新开始的分析会使用当前启用项。</p>
             <p class="setting-help" id="ai-key-status">正在读取 AI 设置…</p>
+            <div class="ai-profiles-heading"><h4>已保存的配置</h4><button class="ghost-button" id="ai-profile-new" type="button">新增配置</button></div>
+            <div class="ai-profiles-list" id="ai-profiles-list" aria-label="已保存的 AI 配置"></div>
+            <div class="setting-result" id="ai-profiles-result" role="status" aria-live="polite"></div>
+            <h4 class="settings-section-title" id="ai-profile-editor-title">新增配置</h4>
+            <p class="ai-field-help" id="ai-profile-editor-help">填写并保存后，可在上方启用。</p>
             <form class="api-key-form" id="api-key-form">
               <div class="ai-provider-fields">
+                <div>
+                  <label for="ai-profile-name">配置名称</label>
+                  <input id="ai-profile-name" type="text" required maxlength="80" autocomplete="off" placeholder="例如：日常分析、视频测试">
+                </div>
+                <div>
+                  <label for="ai-provider-name">供应商名称</label>
+                  <input id="ai-provider-name" type="text" maxlength="80" autocomplete="off" placeholder="例如：Google、本机中转">
+                </div>
                 <div class="ai-url-field">
                   <label for="ai-api-url">接口 URL</label>
                   <input id="ai-api-url" type="url" required maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
@@ -275,8 +288,9 @@
                 <p class="ai-field-help">与文字模型共用已读取的模型列表；请选择支持图片输入的模型，并通过测试连接确认。</p>
               </div>
               <p class="ai-field-help">API Key 会加密保存在本机，不会回显。远程服务请使用 HTTPS。</p>
-              <button class="primary-button" type="submit">保存 AI 设置</button>
-              <div class="setting-result" id="api-key-result"></div>
+              <label for="ai-profile-activate"><input id="ai-profile-activate" type="checkbox">保存后启用这套配置</label>
+              <button class="primary-button" type="submit">保存配置</button>
+              <div class="setting-result" id="api-key-result" role="status" aria-live="polite"></div>
             </form>
           </div>
           <div class="panel settings-panel" data-settings-panel="video" hidden>
@@ -405,7 +419,7 @@
   </div>
   <div class="toast" id="toast"></div>
   <!-- companion-scripts -->
-  <script src="/static/app.js?v=20261016-video-lab"></script>
+  <script src="/static/app.js?v=20261016-ai-profiles"></script>
   <script src="/static/video-lab.js?v=20261016"></script>
 </body>
 </html>
