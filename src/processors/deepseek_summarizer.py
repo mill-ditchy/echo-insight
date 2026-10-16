@@ -308,6 +308,18 @@ class DeepSeekSummarizer:
                 ),
             }
 
+        # Store the actual failed request, not whichever profile is active later.
+        visual_input = any(
+            isinstance(part, dict) and part.get("type") in {"image_url", "video_url", "input_image", "input_video"}
+            for message in messages if isinstance(message, dict)
+            for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+        )
+        safe_model = json.dumps(str(model).replace(api_key, "[已隐藏密钥]")[:200], ensure_ascii=False)
+
+        def with_request_context(error):
+            error.args = (f"请求模型：{safe_model}；输入：{'画面' if visual_input else '文字'}；{error}",)
+            return error
+
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
@@ -319,7 +331,7 @@ class DeepSeekSummarizer:
                     allow_redirects=False,
                 )
                 if 300 <= response.status_code < 400:
-                    raise AIRequestError("AI接口返回重定向，已停止发送密钥和正文，请检查接口地址", category="configuration", status_code=response.status_code)
+                    raise with_request_context(AIRequestError("AI接口返回重定向，已停止发送密钥和正文，请检查接口地址", category="configuration", status_code=response.status_code))
                 if response.ok:
                     try:
                         data = response.json()
@@ -327,7 +339,7 @@ class DeepSeekSummarizer:
                             raise ValueError("响应不是 JSON 对象")
                         return data
                     except (ValueError, json.JSONDecodeError) as exc:
-                        last_error = AIRequestError("AI接口返回了无效 JSON 数据，请检查 URL 是否为 Chat Completions 接口", category="invalid_response")
+                        last_error = with_request_context(AIRequestError("AI接口返回了无效 JSON 数据，请检查 URL 是否为 Chat Completions 接口", category="invalid_response"))
                         if attempt < attempts:
                             time.sleep(2 if attempt == 1 else 5)
                             continue
@@ -363,17 +375,22 @@ class DeepSeekSummarizer:
                 # Redact again after JSON decoding (e.g. a key returned as \\uXXXX).
                 # Bound untrusted diagnostics before storing or displaying them.
                 friendly = str(friendly).replace(api_key, "[已隐藏密钥]")[:500]
-                if "model is unavailable" in str(friendly).lower() or "model_not_found" in str(friendly).lower():
-                    friendly = "当前模型不可用，请在设置中读取可用模型，填写准确的模型 ID 后测试连接。" + str(friendly)[:200]
                 if parameter is None and "reasoning_effort" in friendly.casefold():
                     parameter = "reasoning_effort"
                 current_error = http_error(response.status_code, friendly, error_type=error_type,
                                            error_code=error_code, parameter=parameter)
+                if str(error_code).casefold() == "model_not_found" or any(
+                    marker in friendly.casefold() for marker in ("model is unavailable", "model_not_found", "模型不可用")
+                ):
+                    current_error.args = (f"模型不可用，请编辑配置并读取可用模型后测试连接；{current_error}",)
+                elif current_error.category == "credits":
+                    current_error.args = (f"AI 服务额度不足；{current_error}",)
+                current_error = with_request_context(current_error)
                 if not current_error.retryable:
                     raise current_error
                 last_error = current_error
             except requests.RequestException as exc:
-                last_error = transport_error(exc, api_key)
+                last_error = with_request_context(transport_error(exc, api_key))
                 if not last_error.retryable:
                     raise last_error from None
 

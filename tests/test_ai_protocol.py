@@ -90,6 +90,32 @@ class AITransportTests(unittest.TestCase):
         self.model.get_api_key = Mock(return_value="test-secret")
         self.enterContext(patch.object(deepseek_summarizer.time, "sleep"))
 
+    def test_failed_requests_keep_actual_model_and_input_without_secrets(self):
+        for visual in (False, True):
+            failure = Mock(ok=False, status_code=400, text=json.dumps({"error": {
+                "message": "Upstream request failed: Model is unavailable. test-secret",
+            }}))
+            messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,PRIVATE"}}]}] if visual else []
+            with self.subTest(visual=visual), patch.object(deepseek_summarizer.requests, "post", return_value=failure) as post:
+                with self.assertRaises(AIRequestError) as caught:
+                    self.model._call_api(messages, 'actual-model-test-secret')
+                error = caught.exception
+                self.assertIn('请求模型："actual-model-[已隐藏密钥]"', str(error))
+                self.assertIn(f"输入：{'画面' if visual else '文字'}", str(error))
+                self.assertIn("Model is unavailable", str(error))
+                self.assertNotIn("test-secret", str(error))
+                self.assertNotIn("PRIVATE", str(error))
+                self.assertEqual(error.category, "configuration")
+                self.assertFalse(is_transient_error(error))
+                self.assertEqual(post.call_count, 1)
+
+    def test_machine_only_error_codes_retain_actionable_reason(self):
+        for code, reason in (("model_not_found", "模型不可用"), ("insufficient_quota", "额度不足")):
+            failure = Mock(ok=False, status_code=400, text=json.dumps({"error": {"message": "Request rejected", "code": code}}))
+            with self.subTest(code=code), patch.object(deepseek_summarizer.requests, "post", return_value=failure):
+                with self.assertRaisesRegex(AIRequestError, reason):
+                    self.model._call_api([], "model")
+
     def test_billing_429_stops_after_one_request_and_redacts_decoded_secret(self):
         failure = Mock(ok=False, status_code=429)
         failure.text = json.dumps({"error": {"type": "CreditsError", "message": "余额不足 test-secret"}}, ensure_ascii=True)

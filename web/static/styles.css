@@ -383,6 +383,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #briefing-note-actions { flex-wrap: wrap; gap: 16px; }
 #detail-source-meta { white-space: pre-line; }
 #ai-test-result { overflow-wrap: anywhere; }
+#ai-test-result { white-space: pre-line; }
+.ai-failure { margin-top: 16px; padding: 16px; border: 1px solid #f1d6aa; border-radius: 12px; background: #fffbf3; color: #704819; font-size: var(--ui-font-size); line-height: 1.7; overflow-wrap: anywhere; }
+.ai-failure p { margin: 8px 0; }
+.ai-failure details { margin-top: 10px; }
+.ai-failure summary { cursor: pointer; }
+.ai-failure pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }

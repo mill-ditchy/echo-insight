@@ -178,8 +178,95 @@ function noteSummaryText(value) {
   return normalizeDisplaySummary(value).replace(/\[(?:图片\s*\d+|正文)\]/g, "").trim();
 }
 
+function aiFailureDiagnosis(error) {
+  const raw = String(error || "");
+  const message = raw.toLowerCase();
+  if (!raw) return null;
+  let title, reason, action;
+  if (/insufficient_quota|insufficient_balance|creditserror|insufficient credit|credits exhausted|余额不足|额度不足|http\s*402/.test(message)) {
+    title = "AI 服务额度不足";
+    reason = "服务商返回余额或额度不足，当前请求无法完成。";
+    action = "到服务商后台检查余额、套餐和密钥额度；补充额度，或启用另一套有可用额度的配置，再测试连接。";
+  } else if (/model_not_found|model (?:is )?unavailable|model.*(?:does not exist|not found)|模型不可用|模型不存在/.test(message)) {
+    title = "所选 AI 模型不可用";
+    reason = "接口拒绝了所选模型。可能是模型 ID 不匹配、该接口不提供此模型，或账号没有访问权限；仅凭此错误无法确定具体原因，也不能判断视频是否已读取成功。";
+    action = "编辑对应配置 → 读取可用模型 → 在下拉列表中重新选择文字模型和视觉模型 → 测试连接 → 保存。模型出现在列表中仍需测试实际调用权限；列表没有目标模型时，请向服务商核对支持范围。";
+  } else if (/http\s*401|invalid_api_key|authentication_error|api key.*(?:无效|失效)|尚未配置.*(?:密钥|api key)/.test(message)) {
+    title = "AI 密钥未配置或验证失败";
+    reason = "接口未接受当前 API Key，可能是密钥缺失、失效，或与接口地址不对应。";
+    action = "编辑对应配置，核对接口 URL 和服务商签发的 API Key，填写正确密钥 → 测试连接 → 保存。";
+  } else if (/http\s*403/.test(message)) {
+    title = "AI 接口拒绝访问";
+    reason = "服务商拒绝了请求，可能涉及模型权限、账号限制或接口访问策略。";
+    action = "核对对应配置的接口 URL、密钥和模型权限，并到服务商后台查看限制；测试连接通过后保存。";
+  } else if (/http\s*429|rate.limit|请求过于频繁/.test(message)) {
+    title = "AI 请求触发频率限制";
+    reason = "服务商限制了当前请求频率或并发量。";
+    action = "稍后重试；若持续发生，请降低分析并发或向服务商核对限速，也可启用另一套配置并测试连接。";
+  } else if (/http\s*408|timeout|timed out|连接ai接口失败|读取模型连接失败/.test(message)) {
+    title = "AI 接口连接失败或超时";
+    reason = "本次请求未能正常连接接口，或未在规定时间内收到结果。";
+    action = "检查网络、代理和接口 URL 后重试；若持续失败，在对应配置中测试连接，并核对服务商状态。";
+  } else if (/http\s*5\d\d/.test(message)) {
+    title = "AI 服务暂时异常";
+    reason = "接口或上游服务返回服务器错误。";
+    action = "稍后重试并查看服务商状态；持续失败时，可启用另一套配置并测试连接。";
+  } else if (/ai\s*(?:api|接口)|读取模型失败|模型列表接口/.test(message)) {
+    title = "AI 接口请求未通过";
+    reason = "接口未接受请求或返回格式不符合要求，需结合技术详情核对配置。";
+    action = "编辑对应配置，核对接口 URL、协议和所选模型的输入能力 → 读取可用模型 → 测试连接 → 保存。普通 HTTP 400 也可能是请求参数不兼容。";
+  } else return null;
+  const context = raw.match(/请求模型：(\"(?:[^\"\\]|\\.)*\")；输入：(文字|画面)；/);
+  let request = "这条历史记录未标明实际失败模型，请分别测试文字模型与视觉模型。";
+  if (context) {
+    try { request = `本次失败请求：${context[2]}输入，模型 ${JSON.parse(context[1])}。`; }
+    catch (_error) { /* Older or incomplete diagnostics may not contain valid JSON. */ }
+  }
+  return {title, reason, action, request, raw};
+}
+
+function aiItemErrors(item) {
+  return [...new Set([
+    item.last_attempt_status === "error" ? item.last_attempt_error : "",
+    item.ai_status === "error" ? item.ai_error : "",
+    item.visual_error,
+    ...(item.ai_analysis_warnings || []),
+  ].filter(Boolean))].filter(error => aiFailureDiagnosis(error));
+}
+
+function aiFailurePanel(item) {
+  const errors = aiItemErrors(item);
+  if (!errors.length) return "";
+  const diagnoses = errors.map(aiFailureDiagnosis);
+  const guidance = diagnoses.filter((entry, index) => diagnoses.findIndex(other => other.title === entry.title && other.request === entry.request) === index);
+  return `<aside class="ai-failure" aria-label="AI 分析问题与处理方法">
+    ${item.ai_summary ? '<p>本次分析未完全成功，已保留现有简报。</p>' : ""}
+    ${guidance.map(entry => `<strong>${escapeHtml(entry.title)}</strong><p>${escapeHtml(entry.reason)}</p><p>${escapeHtml(entry.request)}</p><p>处理方法：设置 → AI 接入 → ${escapeHtml(entry.action)}</p>`).join("")}
+    <p>历史请求可能使用之前启用的配置，请核对后编辑；如果要换配置，先启用目标项。修复后返回这条内容重新分析。</p>
+    <button type="button" class="text-button ai-fix-config">修改 AI 配置</button>
+    <details><summary>查看技术详情</summary><pre>${escapeHtml(errors.join("\n\n"))}</pre></details>
+  </aside>`;
+}
+
+async function openAiFailureSettings() {
+  if (state.currentView === "settings" && state.settingsPage === "ai-profile") return;
+  setView("settings");
+  showSettingsPage("ai");
+  try {
+    const data = await api("/api/settings");
+    if (state.currentView !== "settings" || state.settingsPage !== "ai") return;
+    aiProviderDefaults = data.ai_provider || {};
+    applyAiProfiles(data.ai_providers || {profiles: [], active_profile_id: null});
+  } catch (error) { showToast(`配置读取失败：${error.message}`, true); }
+}
+
+function bindAiFailureActions(container) {
+  container.querySelectorAll?.(".ai-fix-config").forEach(button => button.addEventListener("click", openAiFailureSettings));
+}
+
 function summaryText(item) {
   if (item.ai_status === "cancelled") return "分析已取消。需要时可重新分析。";
+  if (!item.ai_summary && item.ai_status === "error" && aiFailureDiagnosis(item.ai_error || item.last_attempt_error)) return "简报暂未生成，请按下方提示处理后重新分析。";
   if (isImageNote(item)) {
     if (item.ai_summary) return noteSummaryText(item.ai_summary);
     if (item.ai_status === "error") return `图文简报生成失败：${item.ai_error || "请重试"}`;
@@ -232,7 +319,8 @@ function updateCard(item) {
   if (item.ai_segment_count) analysisLabel = `${item.ai_input_mode === "video" ? "采样视频" : "分段画面"} · ${item.ai_segment_count}段 · ${item.ai_frame_count || 0}帧`;
   if (item.ai_completeness === "partial") analysisLabel += " · 分析不完整";
   if (["xiaohongshu", "douyin"].includes(item.platform) && item.ai_summary) analysisLabel = item.ai_completeness === "partial" ? "摘要范围有限" : "摘要已生成";
-  const analysisNote = [item.fetch_warning, item.visual_error, ...(["xiaohongshu", "douyin"].includes(item.platform) ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(Boolean).join("；");
+  const diagnosedErrors = aiItemErrors(item);
+  const analysisNote = [...new Set([item.fetch_warning, item.visual_error, ...(["xiaohongshu", "douyin"].includes(item.platform) ? [] : item.ai_analysis_warnings || []), item.last_attempt_status === "error" ? item.last_attempt_error : ""].filter(note => note && !diagnosedErrors.includes(note) && note !== item.ai_error))].join("；");
   const analysisBadge = analysisLabel ? `<span class="analysis-badge ${item.ai_analysis_mode === "visual" ? "visual" : ""}" title="${escapeHtml(analysisNote || analysisLabel)}">${escapeHtml(analysisLabel)}</span>` : "";
   const analysisWarning = analysisNote ? `<div class="setting-help">${escapeHtml(analysisNote)}</div>` : "";
   const reanalyzeButton = item.platform === "bilibili" && item.link ? `<button class="text-button reanalyze-button" data-platform="bilibili" data-article-id="${escapeHtml(item.article_id)}" ${isReanalyzing ? "disabled" : ""}>${isReanalyzing ? "正在分析…" : "重新视觉分析"}</button>` : "";
@@ -248,6 +336,7 @@ function updateCard(item) {
     <div class="update-meta">发布时间：${escapeHtml(item.published || "未知")} · 检测于：${escapeHtml(formatTime(item.detected_at))}</div>
     <div class="update-summary">${escapeHtml(summary)}</div>
     ${analysisWarning}
+    ${aiFailurePanel(item)}
     ${evidenceDetails}
     <div class="analysis-footer"><div class="analysis-context">${contentBadge}${analysisBadge}${originalLink}</div><div class="analysis-actions">${summaryToggle}${reanalyzeButton}</div></div>
   </article>`;
@@ -256,6 +345,7 @@ function updateCard(item) {
 function renderUpdates(container, items, emptyText) {
   container.querySelectorAll(".update-summary").forEach(element => summaryResizeObserver?.unobserve(element));
   container.innerHTML = items.length ? items.map(updateCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  bindAiFailureActions(container);
   container.querySelectorAll(".update-summary").forEach(element => {
     updateSummaryToggle(element);
     summaryResizeObserver?.observe(element);
@@ -399,7 +489,11 @@ function renderBriefing(item) {
   $("#briefing-source").textContent = item.source || "未知作者";
   $("#briefing-meta").textContent = `发布时间：${item.published || "未知"} · 检测时间：${formatTime(item.detected_at)}`;
   $("#briefing-summary").textContent = summaryText(item) + (item.ai_completeness === "partial" ? (isImageNote(item) ? "\n\n图文读取范围有限，请结合原笔记查看。" : "\n\n画面分析不完整，请结合原视频查看。") : "")
-    + (item.last_attempt_status === "error" && item.ai_summary ? `\n\n最近一次重新分析失败，当前展示上次简报：${item.last_attempt_error || "请重试"}` : "");
+    + (item.last_attempt_status === "error" && item.ai_summary && !aiFailureDiagnosis(item.last_attempt_error) ? `\n\n最近一次重新分析失败，当前展示上次简报：${item.last_attempt_error || "请重试"}` : "");
+  const failure = $("#briefing-ai-failure");
+  failure.innerHTML = aiFailurePanel(item);
+  failure.hidden = !failure.innerHTML;
+  bindAiFailureActions(failure);
   const original = $("#briefing-original-link");
   const originalUrl = safeExternalUrl(item.link);
   original.href = originalUrl || "#";
@@ -1480,7 +1574,8 @@ async function probeAiProvider(readModels = false) {
       result.textContent = "测试期间设置已变更，请使用当前设置重新测试。";
       return;
     }
-    result.textContent = error.message;
+    const diagnosis = aiFailureDiagnosis(error.message);
+    result.textContent = diagnosis ? `${diagnosis.title}：${diagnosis.reason}\n本次测试使用当前正在编辑的配置。\n处理方法：${diagnosis.action}\n技术详情：${diagnosis.raw}` : error.message;
     result.classList.add("setting-error");
   } finally {
     aiFormBusy = false;

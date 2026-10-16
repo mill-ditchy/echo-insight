@@ -17,6 +17,7 @@ def run_checks(root: Path, clean: bool = False, *, include_companion: bool = Fal
         [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
         ["node", "tests/test_frontend_security.js"],
         ["node", "tests/test_ai_provider_frontend.js"],
+        ["node", "tests/test_ai_errors_frontend.js"],
         ["node", "tests/test_video_understanding_frontend.js"],
         ["node", "tests/test_xiaohongshu_frontend.js"],
         ["node", "tests/test_douyin_frontend.js"],
