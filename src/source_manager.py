@@ -114,7 +114,8 @@ def add_source(platform: str, uid: str, name: str | None = None, *, profile_url:
             "uid": uid,
             "category": info["category"],
             "added_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            **({"profile_url": profile_url, "avatar": avatar} if platform == "xiaohongshu" else {}),
+            **({"profile_url": profile_url} if platform in {"xiaohongshu", "douyin"} else {}),
+            **({"avatar": avatar} if avatar else {}),
         })
         data["sources"] = sources
         _save(data)
@@ -126,6 +127,23 @@ def add_source(platform: str, uid: str, name: str | None = None, *, profile_url:
 def list_sources() -> list[dict]:
     """列出当前所有关注。"""
     return _load().get("sources", [])
+
+
+def update_source_avatar(platform: str, uid: str, avatar: str) -> dict | None:
+    """Update only the avatar under the source lock; never recreate a removed follow."""
+    from .source_avatars import avatar_url
+    avatar = avatar_url(platform, avatar)
+    if not avatar:
+        return None
+    with _source_lock, interprocess_lock(CONFIG_PATH):
+        data = _load()
+        for source in data.get("sources", []):
+            if source.get("platform") == platform and str(source.get("uid")) == str(uid):
+                if source.get("avatar") != avatar:
+                    source["avatar"] = avatar
+                    _save(data)
+                return source
+    return None
 
 
 def get_source(platform: str, uid: str) -> dict | None:

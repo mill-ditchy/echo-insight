@@ -247,6 +247,8 @@ def parse_activity_api(payload: object, limit: int = 20) -> list[dict]:
         author_name = _clean_text(
             str(actor.get("name") or "") if isinstance(actor, dict) else ""
         )
+        author = target.get("author") if isinstance(target.get("author"), dict) else {}
+        author_avatar = (actor.get("avatar_url") if isinstance(actor, dict) else "") or author.get("avatar_url", "")
         articles.append({
             "id": f"{content_type}:{item_id}",
             "article_id": f"{content_type}:{item_id}",
@@ -260,6 +262,7 @@ def parse_activity_api(payload: object, limit: int = 20) -> list[dict]:
             "content_type_label": _CONTENT_TYPES.get(content_type, "其他"),
             "action": action_text or verb,
             "author_name": author_name,
+            "author_avatar": author_avatar,
             "ai_status": "not_applicable",
         })
         if len(articles) >= limit:

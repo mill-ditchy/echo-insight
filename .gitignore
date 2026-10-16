@@ -32,7 +32,11 @@ knowledge/images/*
 /启动手机连接.ps1
 /requirements-mobile.txt
 /docs/ANDROID.md
+/docs/ANDROID_STANDALONE.md
 /scripts/build_android.py
+/scripts/prepare_android_asr.py
+/scripts/android_dev.py
+/scripts/serve_android_update.py
 /scripts/preview_mobile.py
 /src/security/mobile_access.py
 /tests/test_mobile_access.py

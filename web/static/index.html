@@ -164,7 +164,7 @@
             <button class="settings-entry" type="button" data-settings-page="display"><span class="settings-entry-icon" aria-hidden="true">Aa</span><span><strong>字体与阅读</strong><small>调整界面和简报正文的文字大小</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="schedule"><span class="settings-entry-icon" aria-hidden="true">◷</span><span><strong>自动检查</strong><small>设置关注内容的检查间隔</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="video"><span class="settings-entry-icon" aria-hidden="true">▷</span><span><strong>视频理解</strong><small>调整画面采样、文字识别与分析方式</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
-            <button class="settings-entry" type="button" data-settings-page="knowledge"><span class="settings-entry-icon" aria-hidden="true">▤</span><span><strong>人物与作品资料</strong><small>管理角色参考图和作品资料</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
+            <button class="settings-entry" type="button" data-settings-page="knowledge"><span class="settings-entry-icon" aria-hidden="true">▤</span><span><strong>人物与作品资料</strong><small>管理人物、作品及相关资料</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="history"><span class="settings-entry-icon" aria-hidden="true">≡</span><span><strong>检查历史</strong><small>查看最近的运行结果与异常记录</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
           </nav>
         </div>
@@ -207,7 +207,7 @@
           </div>
           <div class="panel settings-panel ai-settings-panel" data-settings-panel="ai" hidden>
             <div class="panel-title"><h3>AI 接入</h3><span>自定义服务与模型</span></div>
-            <p class="setting-help">填写服务地址和模型，测试连接后保存。支持兼容 Chat Completions 的服务。</p>
+            <p class="setting-help">填写服务地址和 API Key，读取可用模型后选择文字与视觉模型，测试连接后保存。支持兼容 Chat Completions 的服务。</p>
             <p class="setting-help" id="ai-key-status">正在读取 AI 设置…</p>
             <form class="api-key-form" id="api-key-form">
               <div class="ai-provider-fields">
@@ -217,9 +217,8 @@
                   <p class="ai-field-help">可填基础地址或完整的 /chat/completions 地址；本地服务支持 http://127.0.0.1:端口/v1。</p>
                 </div>
                 <div>
-                  <label for="ai-model">文字模型名称</label>
-                  <input id="ai-model" type="text" list="ai-model-options" required maxlength="200" autocomplete="off" spellcheck="false" placeholder="填写或选择服务商的模型 ID">
-                  <datalist id="ai-model-options"></datalist>
+                  <label for="ai-model">文字模型</label>
+                  <select id="ai-model" required disabled><option value="">请先读取可用模型</option></select>
                 </div>
                 <div>
                   <label for="api-key-input">API Key</label>
@@ -237,8 +236,9 @@
               <label class="ai-vision-toggle" for="ai-vision-enabled"><input id="ai-vision-enabled" type="checkbox">启用画面分析</label>
               <p class="ai-field-help">需要使用支持图片输入的模型。</p>
               <div id="ai-vision-model-field" hidden>
-                <label for="ai-vision-model">视觉模型名称（可选）</label>
-                <input id="ai-vision-model" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="留空则使用文字模型">
+                <label for="ai-vision-model">视觉模型</label>
+                <select id="ai-vision-model" disabled><option value="">与文字模型相同</option></select>
+                <p class="ai-field-help">与文字模型共用已读取的模型列表；请选择支持图片输入的模型，并通过测试连接确认。</p>
               </div>
               <p class="ai-field-help">API Key 会加密保存在本机，不会回显。远程服务请使用 HTTPS。</p>
               <button class="primary-button" type="submit">保存 AI 设置</button>
@@ -246,8 +246,8 @@
             </form>
           </div>
           <div class="panel settings-panel" data-settings-panel="video" hidden>
-            <div class="panel-title"><h3>视频理解</h3><span>动漫、游戏与其他视频</span></div>
-            <p class="setting-help">分段观察画面、读取屏幕文字，再核对作品和角色资料。分段分析会增加模型调用次数，结果会缓存。</p>
+            <div class="panel-title"><h3>视频理解</h3><span>画面、文字与背景资料</span></div>
+            <p class="setting-help">分段观察画面、读取屏幕文字，再核对相关人物和作品资料。分段分析会增加模型调用次数，结果会缓存。</p>
             <form id="video-analysis-form" class="api-key-form">
               <label><input id="video-analysis-enabled" type="checkbox" checked>启用分段分析</label>
               <label for="video-input-mode">画面输入方式</label>
@@ -266,17 +266,17 @@
           </div>
           <div class="panel settings-panel" data-settings-panel="knowledge" hidden>
             <div class="panel-title"><h3>人物与作品资料</h3><span>支持持续补充</span></div>
-            <p class="setting-help">添加带姓名、所属作品、形象版本与来源的角色参考图。系统会按视频中的人物截图检索并核对原型，也支持不同动漫、游戏和原创角色。</p>
+            <p class="setting-help">按需添加人物、作品及相关背景资料，记录名称、说明和可靠来源，也可附上参考图。资料用于辅助核对内容，不限定题材；无需添加资料也能使用视频分析。</p>
             <div id="media-knowledge-list"></div>
             <form id="media-knowledge-form" class="api-key-form">
-              <label for="knowledge-name">角色或作品名称</label><input id="knowledge-name" maxlength="200" required>
+              <label for="knowledge-name">人物或作品名称</label><input id="knowledge-name" maxlength="200" required>
               <label for="knowledge-work">所属作品（可选）</label><input id="knowledge-work" maxlength="200">
-              <label for="knowledge-variant">形象版本</label><input id="knowledge-variant" maxlength="200" placeholder="默认服装 / 皮肤名 / 某季动画">
-              <label for="knowledge-appearance">辨识特征（可选）</label><textarea id="knowledge-appearance" rows="2" maxlength="2000" placeholder="头饰、服装纹样、独特配件等"></textarea>
+              <label for="knowledge-variant">版本或形象（可选）</label><input id="knowledge-variant" maxlength="200">
+              <label for="knowledge-appearance">辨识特征（可选）</label><textarea id="knowledge-appearance" rows="2" maxlength="2000"></textarea>
               <label for="knowledge-aliases">别名（用逗号分隔，可选）</label><input id="knowledge-aliases" maxlength="2000">
               <label for="knowledge-text">资料正文</label><textarea id="knowledge-text" rows="4" maxlength="6000" required></textarea>
               <label for="knowledge-source">资料来源链接</label><input id="knowledge-source" type="url" placeholder="https://…" maxlength="2048" required>
-              <label for="knowledge-images">角色参考图（可选，最多5张）</label><input id="knowledge-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+              <label for="knowledge-images">参考图（可选，最多5张）</label><input id="knowledge-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
               <button class="primary-button" type="submit">添加资料</button><div class="setting-result" id="media-knowledge-result"></div>
             </form>
           </div>

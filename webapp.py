@@ -60,7 +60,9 @@ from src.source_manager import (
     get_source,
     list_sources,
     normalize_source_uid,
+    update_source_avatar,
 )
+from src.source_avatars import source_avatar, avatar_url, fetch_source_avatar
 from src.state_manager import load_state, mark_seen
 from src.storage_lock import interprocess_lock
 from src.storage import atomic_json
@@ -404,6 +406,7 @@ def _source_payload(source: dict, updates: list[dict] | None = None) -> dict:
     scan = get_scan(str(source.get("platform", "")), str(source.get("uid", "")))
     return {
         **source,
+        "avatar": source_avatar(source, updates),
         "scan_status": scan.get("scan_status", "unknown"),
         "scan_warning": scan.get("warning", ""),
         "last_success_at": scan.get("last_success_at"),
@@ -621,6 +624,20 @@ def sources() -> dict:
     return {"sources": _source_payloads(list_sources(), list_updates(limit=None))}
 
 
+@app.post("/api/sources/{platform}/{uid}/avatar")
+def refresh_source_avatar(platform: str, uid: str) -> dict:
+    source = get_source(platform, uid)
+    if source is None:
+        raise HTTPException(status_code=404, detail="关注对象不存在")
+    if value := avatar_url(platform, source.get("avatar")):
+        return {"avatar": value}
+    value = fetch_source_avatar(source)
+    if value:
+        if update_source_avatar(platform, uid, value) is None:
+            raise HTTPException(status_code=404, detail="关注对象已删除")
+    return {"avatar": value}
+
+
 @app.get("/api/sources/{platform}/{uid}")
 def source_detail(platform: str, uid: str, limit: int = 200) -> dict:
     source = get_source(platform, uid)
@@ -830,7 +847,10 @@ def create_source(payload: SourceCreate) -> dict:
                 detail="已找到主页，但没有读取到博主名称，请填写备注名称后重试",
             )
         display_name = f"{platform} - {uid}"
-    source_options = {"profile_url": profile_url, "avatar": profile.get("profile_avatar", "")} if platform in {"xiaohongshu", "douyin"} else {}
+    author_avatar = source_avatar({"platform": platform, "avatar": profile.get("profile_avatar", "")}, existing_articles)
+    source_options = {"avatar": author_avatar} if author_avatar else {}
+    if platform in {"xiaohongshu", "douyin"}:
+        source_options["profile_url"] = profile_url
     if not add_source(platform, uid, display_name, **source_options):
         raise HTTPException(status_code=500, detail="关注保存失败")
 

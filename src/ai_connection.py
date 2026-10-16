@@ -58,9 +58,9 @@ def list_provider_models(api_url: str, api_key: str = "") -> dict:
         models = sorted({row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
                          and 0 < len(row["id"]) <= 200 and not any(ord(c) < 32 for c in row["id"])})[:200]
         if not models:
-            raise RuntimeError("接口未返回可用模型；可按服务商说明手动填写模型 ID，再测试连接")
-        return {"models": models, "message": f"已读取 {len(models)} 个模型，请选择文字模型后测试连接。"}
+            raise RuntimeError("接口未返回可用模型，请检查服务地址、密钥和模型列表接口是否可用")
+        return {"models": models, "message": f"已读取 {len(models)} 个模型，请选择文字模型和视觉模型后测试连接。"}
     except requests.RequestException as exc:
         raise RuntimeError("读取模型连接失败，请检查网络和接口 URL") from exc
     except ValueError as exc:
-        raise RuntimeError("模型列表接口未返回有效 JSON，请按服务商说明手动填写模型 ID") from exc
+        raise RuntimeError("模型列表接口未返回有效 JSON，请检查服务地址和模型列表接口是否可用") from exc

@@ -60,7 +60,7 @@ PROFILE_EXPRESSION = r"""
     else notes.push(dom);
   }
   const pageText = document.body.innerText.slice(0, 3000);
-  return {profile_name: name, profile_avatar: notes[0]?.user?.avatar || '', notes: notes.slice(0, 120),
+  return {profile_name: name, profile_avatar: info.imageb || info.images || info.avatar || notes[0]?.user?.avatar || document.querySelector('.user-avatar img, img.user-avatar')?.src || '', notes: notes.slice(0, 120),
     end_confirmed: /没有更多了|没有更多笔记|已到底/.test(document.body.innerText.slice(-1000)),
     empty_confirmed: notes.length === 0 && /还没有发布|暂无笔记|没有笔记/.test(pageText)};
 })()

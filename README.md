@@ -30,7 +30,7 @@
 
 - **Windows 桌面端**：已实现，推荐入口；提供独立的平台登录窗口。
 - **本机网页**：已实现，与桌面共用界面和本机数据。B站扫码可用；知乎、小红书和抖音的独立登录窗口需要桌面入口，网页可复用已保存会话或手动填写自己的 Cookie。
-- **安卓伴侣**：后续计划；安卓源码、手机服务和专用构建内容尚未包含在这个公开仓库中。Windows 安装和运行不依赖安卓。
+- **安卓配套客户端（计划中）**：用于在安卓手机上配合电脑端使用；安卓源码、手机连接服务和专用构建内容尚未包含在这个公开仓库中。Windows 安装和运行不依赖安卓。
 - **版本与分发**：当前可获取的是 `main` 分支源码，`VERSION` 为 `0.1.0`；分支已包含[更新记录](CHANGELOG.md)中的未发布改动。截至 2026-10-13，仓库尚无版本标签或正式 Release，也未提供免 Python 的 EXE 安装包。
 
 本项目是单用户本机应用。GitHub 托管源码，GitHub Pages 无法运行 Python 后端；公网多用户部署尚未实现。
@@ -78,7 +78,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ## 首次配置
 
 1. **打开应用**：空关注列表可以正常启动，不需要复制示例配置或他人的数据。
-2. **配置 AI**：在“设置 → AI 接入”填写自己的接口地址、模型 ID 和 API Key。远程接口使用 HTTPS，本机兼容服务可用 `http://127.0.0.1:端口/v1`。内置默认地址不代表免费额度或可用性保证。
+2. **配置 AI**：在“设置 → AI 接入”填写自己的接口地址和 API Key，点击“读取可用模型”，从下拉列表选择文字模型和视觉模型。远程接口使用 HTTPS，本机兼容服务可用 `http://127.0.0.1:端口/v1`。内置默认地址不代表免费额度或可用性保证。
 3. **测试并保存**：点击“测试连接”；需要分析画面或图片时选择支持图片的模型，并完成图片输入测试。测试会实际调用服务，可能计费。
 4. **登录平台**：在“账号管理”完成需要的平台登录。知乎、小红书和抖音在官方窗口登录后，回到应用保存状态；B站使用手机客户端扫码。
 5. **添加关注**：B站填写数字 UID；其他三个平台粘贴博主主页链接。先检查读取范围与分析状态，再按需启用自动抓取。
@@ -102,6 +102,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 **为什么关闭窗口后还在处理？** 已提交的分析任务使用独立进程。退出前在“设置 → 后台任务”查看状态；备份、更新或卸载前先关闭自动抓取，并等待后台处理结束。
 
 **需要上传个人配置或安装安卓吗？** 都不需要。配置、历史、模型和媒体留在本机，安卓尚未随公开源码提供。
+
+## 文件与目录说明
+
+GitHub 文件列表中，文件名旁的文字是最近一次修改该文件的提交说明。同一次提交涉及多个文件时，这些文字会相同。各文件与目录的用途如下：
+
+| 文件或目录 | 内容与用途 |
+| --- | --- |
+| [desktop.py](desktop.py) | Windows 桌面入口，启动本机服务、应用窗口和平台登录窗口 |
+| [webapp.py](webapp.py) | 本机网页后端，提供关注、阅读、设置和分析任务等接口 |
+| [app.py](app.py) | 交互式命令行入口，管理关注并生成 Markdown 简报 |
+| [scheduler.py](scheduler.py) | 定时检查入口，供 Windows 任务计划程序调用 |
+| [启动赛博情报局.bat](启动赛博情报局.bat) | 使用已安装的本机环境启动桌面应用 |
+| [src/](src/) | 核心代码，包括平台采集、AI 分析、账号、数据存储与后台任务 |
+| [web/](web/) | 桌面和浏览器共用的页面、样式与前端交互代码 |
+| [scripts/](scripts/) | 安装、环境诊断、验证、数据维护与源码打包工具 |
+| [tests/](tests/) | Python 与前端回归测试 |
+| [config/](config/) | 仓库提供配置格式示例；运行时的个人配置保存在本机且不提交 |
+| [data/](data/) | 本机历史与任务数据的存放目录，仓库仅保留目录占位 |
+| [output/](output/) | 本机简报、分析依据与媒体缓存的输出目录，仓库仅保留目录占位 |
+| [knowledge/](knowledge/) | 本机资料参考图的存放目录，仓库不附带预置图库 |
+| [docs/](docs/) | 使用、排查、开发、发布及验证记录等详细文档 |
+| [requirements.txt](requirements.txt) / [requirements-windows-py311.lock](requirements-windows-py311.lock) | 运行依赖声明及 Windows / Python 3.11 的固定版本依赖清单 |
+| [requirements-dev.txt](requirements-dev.txt) / [requirements-dev-windows-py311.lock](requirements-dev-windows-py311.lock) | 开发工具依赖声明及固定版本清单 |
+| [.github/](.github/) | GitHub 自动检查、发布工作流、Issue 与 PR 模板等协作配置 |
+| [.gitignore](.gitignore) / [.gitattributes](.gitattributes) | 指定不纳入 Git 的本机文件，以及文件换行等仓库规则 |
+| [README.md](README.md) | 项目介绍、安装入口、首次配置与文件导航 |
+| [VERSION](VERSION) / [CHANGELOG.md](CHANGELOG.md) | 当前版本号及功能、修复的更新记录 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) / [CONTRIBUTORS.md](CONTRIBUTORS.md) | 贡献流程与贡献者署名 |
+| [SECURITY.md](SECURITY.md) | 安全问题的报告方式与数据保护说明 |
+| [LICENSE](LICENSE) / [LICENSES/](LICENSES/) | 项目 MIT 许可及第三方组件的授权、署名说明 |
+
+代码模块的进一步划分见[开发指南](docs/DEVELOPMENT.md)。
 
 ## 参与、报告与许可
 

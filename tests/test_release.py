@@ -109,7 +109,8 @@ class ReleaseTests(unittest.TestCase):
     def test_current_companion_sources_are_publishable(self):
         project = Path(__file__).resolve().parents[1]
         names = ["mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt"]
-        names += [path.relative_to(project).as_posix() for path in (project / "android").rglob("*") if path.is_file()]
+        names += [path.relative_to(project).as_posix() for path in (project / "android").rglob("*")
+                  if path.is_file() and "__pycache__" not in path.parts]
         for name in names:
             with self.subTest(path=name):
                 self.assertTrue(release.allowed_path(name, include_companion=True))
@@ -124,6 +125,7 @@ class ReleaseTests(unittest.TestCase):
             "config/android-signing.p12", "config/android-signing.json",
             "dist/companion.apk", "android/build/companion.apk",
             "android/assets/pairing.json", "android/assets/server-key.pem",
+            "android/standalone/pairing.json", "android/standalone/history.sqlite", "android/tests/signing.p12",
             "android/src/com/example/Signing.keystore", "android/res/raw/signing.p12",
             "android/src/__pycache__/cache.java", "android/assets/.env.production",
             "src/signing.jks", "web/static/companion.apk",

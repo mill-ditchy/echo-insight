@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from . import browser_runtime as edge
 from .browser_runtime import browser_context as browser
-from .douyin import ID_PATTERN, normalize_uid
+from .douyin import ID_PATTERN, normalize_uid, author_avatar
 
 MAX_SCROLLS = 5
 MAX_POSTS = 100
@@ -27,7 +27,8 @@ DETAIL_EXPRESSION = r"""
       return {aweme_id:id, aweme_type:o.awemeType ?? o.aweme_type, desc:o.desc, item_title:o.itemTitle || o.item_title,
         create_time:o.createTime || o.create_time, is_ads:o.isAds || o.is_ads,
         status:{is_private:o.isPrivate || o.isFriendLimit || o.status?.is_private},
-        author:{sec_uid:a.secUid || a.sec_uid, nickname:a.nickname || a.nickName},
+        author:{sec_uid:a.secUid || a.sec_uid, nickname:a.nickname || a.nickName,
+          avatar_thumb:{url_list:urls(a.avatarThumb || a.avatar_thumb)}},
         images:(o.images || []).map(i=>({url_list:urls(i.urlList || i.url_list)})),
         video:{duration:v.duration, play_addr:{url_list:urls(v.playAddr || v.play_addr)}, play_addr_h264:{url_list:urls(v.playApi)}},
         text_extra:(o.textExtra || o.text_extra || []).map(t=>({hashtag_name:t.hashtagName || t.hashtag_name}))};
@@ -86,11 +87,13 @@ def _responses(client, handled):
     return results
 
 
-def _read(client, handled, collected):
+def _read(client, handled, collected, profile=None):
     name, ended = "", False
     for data in _responses(client, handled):
         if data.get("user"):
             name = str(data["user"].get("nickname") or "")
+            if profile is not None:
+                profile["avatar"] = author_avatar(data["user"]) or profile.get("avatar", "")
         for post in data.get("aweme_list", []):
             if ID_PATTERN.fullmatch(str(post.get("aweme_id", ""))):
                 collected[post["aweme_id"]] = post
@@ -106,12 +109,13 @@ def load_profile(uid, cookie="", *, seen_ids=None):
         client.call("Page.navigate", {"url": "https://www.douyin.com/user/" + uid})
         handled, collected = set(), {}
         started, name, ended = time.monotonic(), "", False
+        profile = {}
         # Public data may arrive after the initial login prompt. A prompt alone
         # does not mean publicly available posts failed to load.
         for _ in range(6):
             client.drain(2)
             check_access(client)
-            current_name, current_end = _read(client, handled, collected)
+            current_name, current_end = _read(client, handled, collected, profile)
             name, ended = current_name or name, current_end or ended
             if collected or ended:
                 break
@@ -126,7 +130,7 @@ def load_profile(uid, cookie="", *, seen_ids=None):
                 edge.evaluate(client, "(() => { for (const e of document.querySelectorAll('main, [data-e2e=scroll-list], #douyin-right-container')) e.scrollTo(0,e.scrollHeight); window.scrollTo(0,document.body.scrollHeight); })()")
                 client.drain(3)
                 check_access(client)
-                current_name, current_end = _read(client, handled, collected)
+                current_name, current_end = _read(client, handled, collected, profile)
                 name, ended = current_name or name, current_end or ended
                 if len(collected) == before:
                     break
@@ -139,7 +143,8 @@ def load_profile(uid, cookie="", *, seen_ids=None):
             if "登录" in page.get("text", ""):
                 raise DouyinAccessError("login_required", "未读到公开作品，请在账号管理登录抖音后重试")
             raise DouyinAccessError("unavailable", "抖音主页未能读取，请检查链接或稍后重试")
-        return {"posts": own, "profile_name": name, "empty_confirmed": not own and ended, "scan_warning": warning}
+        avatar = profile.get("avatar") or next((value for p in own if (value := author_avatar(p.get("author") or {}))), "")
+        return {"posts": own, "profile_name": name, "profile_avatar": avatar, "empty_confirmed": not own and ended, "scan_warning": warning}
 
 
 def load_post(ident, cookie="", *, is_note=False):

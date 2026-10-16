@@ -24,8 +24,9 @@ SECRET_PATTERNS = (
 )
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?")
 COMPANION_FILES = {
-    "mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt", "docs/ANDROID.md",
-    "scripts/build_android.py", "scripts/preview_mobile.py", "src/security/mobile_access.py",
+    "mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt", "docs/ANDROID.md", "docs/ANDROID_STANDALONE.md",
+    "scripts/build_android.py", "scripts/prepare_android_asr.py", "scripts/preview_mobile.py", "src/security/mobile_access.py",
+    "scripts/android_dev.py", "scripts/serve_android_update.py",
     "tests/test_mobile_access.py",
 }
 
@@ -58,7 +59,8 @@ def allowed_path(name: str, *, include_companion: bool = False) -> bool:
     if path.parts[0] == "config":
         return len(path.parts) == 2 and path.name.endswith(".example.json") and not path.name.startswith(".")
     if path.parts[0] == "android":
-        source_types = {"src": {".java"}, "res": {".xml"}, "assets": {".js", ".css"}, "tests": {".py", ".js"}}
+        source_types = {"src": {".java"}, "res": {".xml"}, "assets": {".js", ".css"},
+                        "standalone": {".html", ".js", ".css"}, "tests": {".py", ".js", ".cjs", ".java"}}
         if name != "android/AndroidManifest.xml" and not (
             len(path.parts) >= 3 and path.suffix.lower() in source_types.get(path.parts[1], set())
         ):

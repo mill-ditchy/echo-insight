@@ -249,6 +249,7 @@ class BilibiliFetcher(PlatformFetcher):
                 timestamp = float(author.get("pub_ts") or 0)
                 collected[bvid] = {"video_id": bvid, "title": archive.get("title", "无标题"),
                     "link": f"https://www.bilibili.com/video/{bvid}", "author_name": author.get("name", ""),
+                    "author_avatar": author.get("face", ""),
                     "published": datetime.fromtimestamp(timestamp).isoformat(timespec="seconds") if timestamp else "",
                     "published_ts": timestamp, "summary": str(archive.get("desc") or "")[:200]}
                 collected[bvid]["pinned"] = pinned
@@ -342,6 +343,7 @@ class BilibiliFetcher(PlatformFetcher):
                             "link": f"https://www.bilibili.com/video/{bvid}",
                             "video_id": bvid,
                             "author_name": author.get("name", ""),
+                            "author_avatar": author.get("face", ""),
                             "published": pub,
                             "published_ts": ts,
                             "pinned": "置顶" in str(modules.get("module_tag") or ""),

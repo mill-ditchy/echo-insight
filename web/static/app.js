@@ -478,13 +478,61 @@ function renderPlatforms(container, sources) {
   container.querySelectorAll(".platform-card").forEach((card) => card.addEventListener("click", () => showPlatformSources(card.dataset.platform)));
 }
 
+function sourceAvatarContents(source) {
+  const url = window.CyberHost?.showRemoteAvatars === false ? "" : safeExternalUrl(source.avatar);
+  const initial = [...String(source.name || "博主").trim()][0] || "博";
+  return `<span class="source-avatar-placeholder">${escapeHtml(initial)}</span>${url ? `<img class="source-avatar-image" src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}`;
+}
+
+function bindSourceAvatarFallbacks(container) {
+  container.querySelectorAll(".source-avatar-image").forEach(image => {
+    image.addEventListener("error", () => image.remove(), { once: true });
+  });
+}
+
 function renderSources(container, sources) {
   container.innerHTML = sources.length ? sources.map((source) => `<article class="source-card" data-platform="${escapeHtml(source.platform)}" data-uid="${escapeHtml(source.uid)}">
-    <div class="source-card-top"><h3 class="source-name">${escapeHtml(source.name)}</h3><span class="source-platform">${platformIcon(source.platform, "source-platform-icon")}<span>${escapeHtml(source.category || platformLabel(source.platform))}</span></span></div>
+    <div class="source-card-top"><span class="source-avatar" aria-hidden="true">${sourceAvatarContents(source)}</span><h3 class="source-name">${escapeHtml(source.name)}</h3></div>
     ${["xiaohongshu", "douyin"].includes(source.platform) ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
     <div class="source-stats"><div><strong>${source.new_video_count || 0}</strong>已收录内容</div><div><strong class="source-unread-count">${source.unread_count || 0}</strong>未读</div></div>
   </article>`).join("") : `<div class="empty-state">还没有关注对象，点击右上角添加第一位博主。</div>`;
   $$(".source-card").forEach((card) => card.addEventListener("click", () => loadSourceDetail(card.dataset.platform, card.dataset.uid)));
+  bindSourceAvatarFallbacks(container);
+}
+
+const sourceAvatarRequests = new Map();
+
+async function loadSourceAvatars(sources) {
+  if (window.CyberHost?.showRemoteAvatars === false) return;
+  const pending = sources.filter(source => !safeExternalUrl(source.avatar));
+  async function worker() {
+    while (pending.length) {
+      const source = pending.shift();
+      if (state.sourcesStage !== "sources" || state.selectedPlatform !== source.platform) return;
+      const key = JSON.stringify([source.platform, String(source.uid)]);
+      const cached = sourceAvatarRequests.get(key);
+      if (!cached || Date.now() - cached.requestedAt >= 600000) {
+        sourceAvatarRequests.set(key, {
+          requestedAt: Date.now(),
+          promise: api(`/api/sources/${encodeURIComponent(source.platform)}/${encodeURIComponent(source.uid)}/avatar`, { method: "POST" }).catch(() => ({ avatar: "" })),
+        });
+      }
+      const data = await sourceAvatarRequests.get(key).promise;
+      const avatar = safeExternalUrl(data.avatar);
+      const current = state.sources.find(item => item.platform === source.platform && String(item.uid) === String(source.uid));
+      if (!avatar || !current) continue;
+      current.avatar = avatar;
+      if (state.currentView !== "sources" || state.sourcesStage !== "sources" || state.selectedPlatform !== source.platform) continue;
+      $$(".source-card").forEach(card => {
+        if (card.dataset.platform === source.platform && String(card.dataset.uid) === String(source.uid)) {
+          const slot = card.querySelector(".source-avatar");
+          if (slot) slot.innerHTML = sourceAvatarContents(current);
+          bindSourceAvatarFallbacks(card);
+        }
+      });
+    }
+  }
+  await Promise.all([worker(), worker()]);
 }
 
 function showPlatformSources(platform) {
@@ -497,6 +545,7 @@ function showPlatformSources(platform) {
   $("#back-to-platforms").hidden = false;
   $("#source-list").className = "source-grid";
   renderSources($("#source-list"), sources);
+  loadSourceAvatars(sources);
 }
 
 function showPlatformPicker() {
@@ -1162,10 +1211,14 @@ async function loadMediaKnowledge() {
   const data = await api("/api/knowledge");
   mediaKnowledgeEntries = data.entries || [];
   const status = data.character_models || {};
-  const modelInfo = `<p class="setting-help">人物原型识别：${status.ccip_ready ? "CCIP已安装" : "CCIP待安装"}；${status.wd_ready ? "WD辅助标签已安装" : "WD辅助标签待安装"}。已收录${mediaKnowledgeEntries.filter(e => e.reference_images?.length).length}个有图条目。图库外角色会保留未知，可在下方补充不同作品与形象版本。</p>`;
-  $("#media-knowledge-list").innerHTML = mediaKnowledgeEntries.length ? mediaKnowledgeEntries.map(entry =>
+  if (!mediaKnowledgeEntries.length) {
+    $("#media-knowledge-list").innerHTML = `<p class="setting-help">尚未添加资料。可在下方添加自己的资料，也可直接使用视频分析。</p>`;
+    return;
+  }
+  const modelInfo = `<details><summary>可选参考图匹配状态</summary><p class="setting-help">${status.ccip_ready ? "CCIP已安装" : "CCIP未安装"}；${status.wd_ready ? "WD辅助标签已安装" : "WD辅助标签未安装"}。已收录${mediaKnowledgeEntries.filter(e => e.reference_images?.length).length}个有图条目。这些模型主要用于插画角色匹配，不代表通用人物识别能力；资料文本的使用不依赖这些模型。</p></details>`;
+  $("#media-knowledge-list").innerHTML = mediaKnowledgeEntries.map(entry =>
     `<p class="setting-help"><strong>${escapeHtml(entry.name)}</strong>${entry.work ? ` · ${escapeHtml(entry.work)}` : ""} · ${escapeHtml(entry.variant || "默认形象")} · ${entry.reference_images?.length || 0}张参考图<br>${escapeHtml(entry.text.slice(0, 140))}</p>`
-  ).join("") : `<p class="setting-help">尚未添加资料。仍可分析视频，并按需查询陌生作品。</p>`;
+  ).join("");
   $("#media-knowledge-list").innerHTML = modelInfo + `<details><summary>查看全部${mediaKnowledgeEntries.length}个资料条目</summary>${$("#media-knowledge-list").innerHTML}</details>`;
 }
 
@@ -1206,11 +1259,43 @@ function renderAiKeyStatus(provider) {
   }
 }
 
+let aiModelCatalog = { apiUrl: "", models: [] };
+
+function aiModelServiceUrl(value) {
+  try {
+    const url = new URL(value.trim());
+    const path = url.pathname.replace(/\/+$/, "");
+    url.pathname = !path ? "/v1/chat/completions" : path.endsWith("/chat/completions") ? path : `${path}/chat/completions`;
+    return url.href;
+  } catch (_error) { return value.trim(); }
+}
+
+function renderAiModelChoices(models, textModel = "", visionModel = "", saved = false) {
+  const textSelect = $("#ai-model");
+  const visionSelect = $("#ai-vision-model");
+  // Before reading a catalog, keep saved models visible so existing settings
+  // remain usable. Once read, both selectors contain only the returned IDs.
+  const choices = [...new Set(saved ? [...models, textModel, visionModel].filter(Boolean) : models)];
+  const options = choices.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("");
+  textSelect.innerHTML = `<option value="" disabled>${choices.length ? "请选择文字模型" : "请先读取可用模型"}</option>${options}`;
+  visionSelect.innerHTML = `<option value="">与文字模型相同</option>${options}`;
+  textSelect.value = choices.includes(textModel) ? textModel : choices[0] || "";
+  visionSelect.value = choices.includes(visionModel) ? visionModel : "";
+  textSelect.disabled = choices.length === 0;
+  visionSelect.disabled = choices.length === 0;
+}
+
+function resetAiModelChoices() {
+  aiModelCatalog = { apiUrl: "", models: [] };
+  renderAiModelChoices([]);
+}
+
 function fillAiProviderForm(provider) {
   $("#ai-api-url").value = provider.api_url || "";
-  $("#ai-model").value = provider.model || "";
+  const sameService = aiModelCatalog.apiUrl === aiModelServiceUrl(provider.api_url || "");
+  if (!sameService) aiModelCatalog = { apiUrl: "", models: [] };
+  renderAiModelChoices(sameService ? aiModelCatalog.models : [], provider.model || "", provider.vision_model || "", !sameService);
   $("#ai-vision-enabled").checked = Boolean(provider.vision_enabled);
-  $("#ai-vision-model").value = provider.vision_model || "";
   $("#ai-vision-model-field").hidden = !provider.vision_enabled;
 }
 
@@ -1228,7 +1313,7 @@ async function probeAiProvider(readModels = false) {
   const result = $("#ai-test-result");
   result.classList.remove("setting-error");
   if (!draft.api_url || (!readModels && !draft.model)) {
-    result.textContent = readModels ? "请填写接口 URL。" : "请填写接口 URL 和模型名称。";
+    result.textContent = readModels ? "请填写接口 URL。" : "请填写接口 URL，读取可用模型并选择文字模型。";
     result.classList.add("setting-error");
     return;
   }
@@ -1244,9 +1329,9 @@ async function probeAiProvider(readModels = false) {
       return;
     }
     if (readModels) {
-      $("#ai-model-options").innerHTML = data.models.map(model => `<option value="${escapeHtml(model)}"></option>`).join("");
-      if (!data.models.includes(draft.model)) $("#ai-model").value = data.models[0] || "";
-      result.textContent = `${data.message} 可用模型：${data.models.join("、")}`;
+      aiModelCatalog = { apiUrl: aiModelServiceUrl(draft.api_url), models: data.models };
+      renderAiModelChoices(data.models, draft.model, draft.vision_model);
+      result.textContent = `已读取 ${data.models.length} 个模型，请在下拉列表中选择文字模型和视觉模型，再测试连接。`;
     } else {
       result.textContent = `${data.message} ${data.checks.map(check => `${check.mode === "vision" ? "图片" : "文字"}：${check.model}（${(check.elapsed_ms / 1000).toFixed(1)} 秒）`).join("；")}`;
     }
@@ -1266,7 +1351,7 @@ async function updateAiProvider(event) {
   const apiUrl = $("#ai-api-url").value.trim();
   const model = $("#ai-model").value.trim();
   if (!apiUrl || !model) {
-    result.textContent = "请填写接口 URL 和模型名称。";
+    result.textContent = "请填写接口 URL，读取可用模型并选择文字模型。";
     result.classList.add("setting-error");
     return;
   }
@@ -1482,7 +1567,7 @@ function bindEvents() {
     $(selector).addEventListener("input", () => {
       $("#ai-test-result").textContent = "设置已变更，请重新测试连接。";
       $("#ai-test-result").classList.remove("setting-error");
-      if (selector === "#ai-api-url" || selector === "#api-key-input") $("#ai-model-options").innerHTML = "";
+      if (selector === "#ai-api-url" || selector === "#api-key-input") resetAiModelChoices();
     });
   });
   $("#ai-vision-enabled").addEventListener("change", (event) => {

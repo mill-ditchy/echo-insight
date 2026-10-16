@@ -4,7 +4,7 @@
 
 默认最多取6帧、裁10个人物区域，每个区域召回3个不同身份，再用小批次核对。参数在 config/character_recognition.json。本地模型在 models/characters，身份结果和核验批次在 output/video_evidence/<视频ID>/characters_<hash>，图库特征在 output/character_features。
 
-设置中的“人物原型图库与多作品资料”可以添加动漫、游戏、原创角色：填写名字、所属作品、形象版本、独特特征和资料出处，再上传参考图。同一角色可添加不同角度；明显不同的皮肤或造型使用单独条目。导入采用追加接口，避免同时添加时互相覆盖。
+设置中的“人物与作品资料”用于管理各种题材的人物与作品资料。可选的插画角色匹配功能需要参考图：填写名字、所属作品、形象版本、独特特征和资料出处，再上传参考图。同一角色可添加不同角度；明显不同的皮肤或造型使用单独条目。导入采用追加接口，避免同时添加时互相覆盖。
 
 画面人物、原动画对照人物、Q版/线稿参考人物分开记录。确认原型姓名不代表确认服装或属性版本。不足时保留未知和候选；图像距离与WD标签分数不能当作识别准确率。图库和标签词表都有覆盖范围，大幅改绘或图库外原创角色需要可靠参考图。
 
@@ -14,7 +14,7 @@
   .venv\Scripts\python.exe scripts/setup_character_models.py --mirror
 仅安装主要图像检索模型：
   .venv\Scripts\python.exe scripts/setup_character_models.py --without-wd
-安装内置图库：
+手动导入游戏角色示例（可选，应用不会自动执行）：
   .venv\Scripts\python.exe scripts/seed_character_gallery.py
 
 更改图库会重做人物识别与最终摘要，但保留已有的场景观察。局部核验超时不会丢失场景证据；下次分析会重试失败批次。已展示的摘要使用独立证据快照，后续失败不会覆盖它的分析依据。

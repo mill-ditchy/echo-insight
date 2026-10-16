@@ -47,6 +47,16 @@ def post_title(body, explicit=""):
     return title[:80] + ("…" if len(title) > 80 else "")
 
 
+def author_avatar(author):
+    for key in ("avatar_thumb", "avatar_medium", "avatar_larger"):
+        value = author.get(key) or {}
+        urls = [value] if isinstance(value, str) else value.get("url_list", []) if isinstance(value, dict) else []
+        for url in urls:
+            if result := media_url(url):
+                return result
+    return ""
+
+
 def parse_post(raw, uid):
     ident = str(raw.get("aweme_id") or "")
     author = raw.get("author") or {}
@@ -80,6 +90,7 @@ def parse_post(raw, uid):
     return {"article_id": "dy_" + ident, "note_id": ident, "title": post_title(body, raw.get("item_title")),
             "summary": body, "link": f"https://www.douyin.com/{'note' if is_note else 'video'}/{ident}",
             "published": published, "published_ts": timestamp, "author_name": str(author.get("nickname") or ""),
+            "author_avatar": author_avatar(author),
             "content_type": "image_note" if is_note else "video", "content_type_label": "图文" if is_note else "视频",
             "images": images[:60], "image_count": len(image_entries), "media_urls": urls[:6],
             "duration": max(0, float(video.get("duration") or raw.get("duration") or 0) / 1000),
@@ -126,7 +137,7 @@ class DouyinFetcher(PlatformFetcher):
                         articles = articles[:min(anchors) + 1]
                 articles = [a for a in articles if a["article_id"] not in seen]
             record_result(uid, count=len(articles), warning=result.get("scan_warning", ""))
-            return {"articles": articles, "profile_name": result["profile_name"], "empty_confirmed": result.get("empty_confirmed", False), "scan_warning": result.get("scan_warning", "")}
+            return {"articles": articles, "profile_name": result["profile_name"], "profile_avatar": media_url(result.get("profile_avatar", "")) or next((a["author_avatar"] for a in articles if a.get("author_avatar")), ""), "empty_confirmed": result.get("empty_confirmed", False), "scan_warning": result.get("scan_warning", "")}
         except Exception as exc:
             record_result(uid, error=exc)
             raise
