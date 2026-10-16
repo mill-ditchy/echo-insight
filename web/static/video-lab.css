@@ -1,0 +1,21 @@
+.video-lab-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.video-lab-upload, .video-lab-preview, .video-lab-result { padding: 24px; }
+.video-lab-preview h3 { margin: 0; font-size: 17px; }
+.video-lab-preview video { display: block; width: 100%; max-height: 430px; margin-top: 16px; border-radius: 12px; background: #111827; }
+.video-lab-preview video[hidden] { display: none; }
+.video-lab-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.video-lab-result { margin: 24px 0; }
+.video-lab-result pre { margin: 20px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: var(--briefing-font-size, 16px); line-height: 1.85; }
+.video-lab-result details { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.video-lab-history { display: grid; gap: 12px; }
+.video-lab-history-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; }
+.video-lab-history-row strong { overflow-wrap: anywhere; }
+.video-lab-history-row .video-lab-actions { flex: none; margin: 0; }
+.video-lab-history .setting-help { margin: 4px 0 0; }
+@media (max-width: 980px) { .video-lab-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 620px) {
+  .nav-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  body.android-companion .nav-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .video-lab-upload, .video-lab-preview, .video-lab-result { padding: 18px; }
+  .video-lab-history-row { align-items: flex-start; padding: 16px; flex-direction: column; gap: 10px; }
+}

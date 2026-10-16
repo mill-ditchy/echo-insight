@@ -21,8 +21,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from src import __version__
+from src import video_lab
 
 from src.accounts.bilibili_account import (
     get_account_status,
@@ -232,6 +235,10 @@ class VideoAnalysisUpdate(BaseModel):
 
 class KnowledgeUpdate(BaseModel):
     entries: list[dict] = Field(max_length=2000)
+
+
+class VideoLabQuestion(BaseModel):
+    prompt: str = Field(default=video_lab.DEFAULT_PROMPT, max_length=4000)
 
 
 def _read_scheduler_config() -> dict:
@@ -1148,6 +1155,95 @@ def check_now() -> dict:
         creationflags=_hidden_creation_flags(),
     )
     return {"message": "已经开始检查，结果会写入检查历史和运行日志"}
+
+
+@app.get("/api/video-lab/config")
+def video_lab_config() -> dict:
+    return video_lab.public_config()
+
+
+@app.get("/api/video-lab/videos")
+def video_lab_list() -> dict:
+    return {"videos": video_lab.list_videos()}
+
+
+@app.post("/api/video-lab/videos", status_code=201)
+async def video_lab_upload(request: Request, filename: str) -> dict:
+    if not filename or len(filename) > 200 or any(ord(c) < 32 for c in filename) or "/" in filename or "\\" in filename:
+        raise HTTPException(400, "视频文件名无效")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in video_lab.FORMATS:
+        raise HTTPException(400, "请上传MP4、MOV或WebM视频")
+    video_id = video_lab.uuid.uuid4().hex
+    directory = video_lab.video_directory(video_id)
+    directory.mkdir(parents=True)
+    temporary = directory / "upload.tmp"
+    original = directory / ("original" + suffix)
+    saved = False
+    try:
+        digest, size = hashlib.sha256(), 0
+        with temporary.open("wb") as stream:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > video_lab.request_limits.MAX_VIDEO_BODY_BYTES:
+                    raise HTTPException(413, "视频超过64 MB上限")
+                digest.update(chunk)
+                stream.write(chunk)
+        if not size:
+            raise HTTPException(400, "请选择非空视频文件")
+        metadata = await run_in_threadpool(video_lab.inspect_video, temporary, suffix)
+        temporary.replace(original)
+        record = video_lab.create_record(video_id, filename, suffix, size, digest.hexdigest(), metadata)
+        saved = True
+        return record
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ClientDisconnect as exc:
+        raise HTTPException(400, "上传已中断，请重新选择视频") from exc
+    finally:
+        if not saved:
+            temporary.unlink(missing_ok=True)
+            original.unlink(missing_ok=True)
+            (directory / "record.json").unlink(missing_ok=True)
+            directory.rmdir()
+
+
+@app.get("/api/video-lab/videos/{video_id}")
+def video_lab_detail(video_id: str) -> dict:
+    try:
+        return video_lab.read_video(video_id)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(404, "没有找到上传的视频") from exc
+
+
+@app.get("/api/video-lab/videos/{video_id}/file")
+def video_lab_file(video_id: str):
+    record = video_lab_detail(video_id)
+    path = video_lab.video_directory(video_id) / ("original" + record["suffix"])
+    if not path.is_file():
+        raise HTTPException(404, "原视频文件已不存在")
+    return FileResponse(path, media_type=record["mime_type"], filename=record["filename"], content_disposition_type="inline")
+
+
+@app.post("/api/video-lab/videos/{video_id}/analyze", status_code=202)
+def video_lab_analyze(video_id: str, payload: VideoLabQuestion) -> dict:
+    video_lab_detail(video_id)
+    try:
+        return video_lab.start_analysis(video_id, payload.prompt)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(503, "无法启动视频分析，请检查AI接入设置") from exc
+
+
+@app.delete("/api/video-lab/videos/{video_id}")
+def video_lab_delete(video_id: str) -> dict:
+    video_lab_detail(video_id)
+    try:
+        video_lab.delete_video(video_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"message": "视频与实验结果已删除"}
 
 
 if __name__ == "__main__":

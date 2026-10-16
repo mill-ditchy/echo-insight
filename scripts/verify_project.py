@@ -23,6 +23,7 @@ def run_checks(root: Path, clean: bool = False, *, include_companion: bool = Fal
         ["node", "tests/test_source_navigation_frontend.js"],
         ["node", "tests/test_collection_host_frontend.js"],
         ["node", "tests/test_source_avatars_frontend.js"],
+        ["node", "tests/test_video_lab_frontend.js"],
     ]
     if include_companion:
         commands.extend([

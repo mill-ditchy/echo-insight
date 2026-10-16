@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css?v=20261012-android-layout">
   <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
   <link rel="stylesheet" href="/static/settings.css?v=20261012-settings-pages">
+  <link rel="stylesheet" href="/static/video-lab.css?v=20261016">
   <!-- companion-styles -->
 </head>
 <body>
@@ -26,6 +27,7 @@
         <button class="nav-item" data-view="sources" aria-label="关注列表" title="关注列表"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M9 3v10l3-2 3 2V3"/></svg><span class="nav-label">关注列表</span><span class="mobile-nav-label">关注</span></button>
         <button class="nav-item" data-view="accounts" aria-label="账号管理" title="账号管理"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="nav-label">账号管理</span><span class="mobile-nav-label">账号</span></button>
         <button class="nav-item" data-view="settings" aria-label="设置" title="设置"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7m4 0h5M4 17h2m4 0h10"/><circle cx="13" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="nav-label">设置</span><span class="mobile-nav-label">设置</span></button>
+        <button class="nav-item" id="video-lab-nav" data-view="video-lab" aria-label="视频实验" title="视频实验"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="3"/><path d="m16 10 5-3v10l-5-3M7 9h5M7 13h3"/></svg><span class="nav-label">视频实验</span><span class="mobile-nav-label">视频</span></button>
       </nav>
       <div class="sidebar-bottom">
         <div class="connection-dot" aria-label="本地服务运行中" title="本地服务运行中"><i aria-hidden="true"></i><span class="connection-label">本地服务运行中</span></div>
@@ -91,6 +93,38 @@
         </div>
         <div class="updates-list" id="dashboard-updates"></div>
         <button class="ghost-button history-more" id="dashboard-load-more" type="button" hidden>加载更多消息</button>
+      </section>
+
+      <section class="view" id="view-video-lab">
+        <div class="section-heading page-heading">
+          <div><h2>上传视频，看看模型能理解多少</h2><p class="section-description">完整视频直接交给模型，保留画面、声音与时序。结果单独保存，方便逐次比较。</p></div>
+        </div>
+        <div class="video-lab-layout">
+          <div class="panel video-lab-upload">
+            <form id="video-lab-form" class="api-key-form">
+              <label for="video-lab-file">选择本地视频</label>
+              <input id="video-lab-file" type="file" accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm">
+              <p class="setting-help">MP4、MOV、WebM，最大64 MB，时长不超过15分钟。点击分析后会将原视频发送至你配置的AI服务。</p>
+              <label for="video-lab-prompt">想了解什么</label>
+              <textarea id="video-lab-prompt" rows="6" maxlength="4000" placeholder="例如：视频讲了什么？人物是谁？哪些地方用了二创和原片对照？"></textarea>
+              <p id="video-lab-model" class="setting-help">正在读取模型设置…</p>
+              <div class="video-lab-actions"><button class="primary-button" id="video-lab-submit" type="submit">上传并分析</button><button class="ghost-button" id="video-lab-retry" type="button" disabled>重新分析此视频</button></div>
+              <p class="setting-result" id="video-lab-status" role="status" aria-live="polite"></p>
+            </form>
+          </div>
+          <div class="panel video-lab-preview">
+            <h3>原视频预览</h3><p class="setting-help" id="video-lab-file-info">选择视频后可在这里播放，对照模型的回答。</p>
+            <video id="video-lab-preview" controls playsinline preload="metadata" hidden></video>
+          </div>
+        </div>
+        <section class="panel video-lab-result" id="video-lab-result" hidden>
+          <div class="panel-title"><h3>模型回答</h3><button class="ghost-button" id="video-lab-copy" type="button">复制回答</button></div>
+          <p class="setting-help" id="video-lab-result-meta"></p>
+          <pre id="video-lab-answer"></pre>
+          <div id="video-lab-previous-runs"></div>
+        </section>
+        <div class="section-heading"><div><h2>最近的实验</h2><p class="section-description">可重新打开视频、修改提问再分析，旧回答会保留。</p></div><button class="ghost-button" id="video-lab-refresh" type="button">刷新记录</button></div>
+        <div id="video-lab-history" class="video-lab-history"></div>
       </section>
 
       <section class="view" id="view-sources">
@@ -371,6 +405,7 @@
   </div>
   <div class="toast" id="toast"></div>
   <!-- companion-scripts -->
-  <script src="/static/app.js?v=20261012-settings-pages"></script>
+  <script src="/static/app.js?v=20261016-video-lab"></script>
+  <script src="/static/video-lab.js?v=20261016"></script>
 </body>
 </html>

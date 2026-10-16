@@ -597,6 +597,7 @@ function setView(view) {
   }
   if (view !== "source-detail") invalidateSourceRequests();
   state.currentView = view;
+  if (view !== "video-lab") window.VideoLab?.leave();
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   const navView = view === "source-detail" ? "sources" : view === "briefing" ? state.briefingBack : view;
   $$(".nav-item").forEach((element) => {
@@ -605,9 +606,10 @@ function setView(view) {
     if (active) element.setAttribute("aria-current", "page");
     else element.removeAttribute("aria-current");
   });
-  const titles = { dashboard: "最新消息", sources: "关注列表", accounts: "账号管理", settings: "设置", "source-detail": "博主详情", briefing: "简报详情" };
+  const titles = { dashboard: "最新消息", sources: "关注列表", accounts: "账号管理", settings: "设置", "source-detail": "博主详情", briefing: "简报详情", "video-lab": "视频实验" };
   $("#view-title").textContent = titles[view] || "赛博情报局";
   if (view === "settings") showSettingsPage(null, false);
+  if (view === "video-lab") window.VideoLab?.load().catch(error => showToast(error.message, true));
 }
 
 function renderAutomationStatus(scheduler) {

@@ -1,10 +1,13 @@
 """Limit API request bodies before JSON parsing or route execution."""
 
 from starlette.responses import JSONResponse
+from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 MAX_API_BODY_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_BODY_BYTES = 5 * 1024 * 1024
+MAX_VIDEO_BODY_BYTES = 64 * 1024 * 1024
+VIDEO_UPLOAD_PATH = "/api/video-lab/videos"
 
 
 class ApiBodyLimitMiddleware:
@@ -15,7 +18,9 @@ class ApiBodyLimitMiddleware:
         if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
             await self.app(scope, receive, send)
             return
-        limit = (MAX_IMAGE_BODY_BYTES if scope["path"] == "/api/knowledge/reference-image"
+        video_upload = scope["path"] == VIDEO_UPLOAD_PATH and scope.get("method") == "POST"
+        limit = (MAX_VIDEO_BODY_BYTES if video_upload else
+                 MAX_IMAGE_BODY_BYTES if scope["path"] == "/api/knowledge/reference-image"
                  else MAX_API_BODY_BYTES)
 
         async def reject(status: int, detail: str) -> None:
@@ -32,6 +37,23 @@ class ApiBodyLimitMiddleware:
             if len(length) > len(bound) or (len(length) == len(bound) and length > bound):
                 await reject(413, "请求内容超过大小上限")
                 return
+
+        if video_upload:
+            # Videos are written to a temporary file by the route. Keep the
+            # ordinary API buffering policy without duplicating large media in RAM.
+            received = 0
+
+            async def limited_receive():
+                nonlocal received
+                message = await receive()
+                if message["type"] == "http.request":
+                    received += len(message.get("body", b""))
+                    if received > limit:
+                        raise HTTPException(413, "视频超过64 MB上限")
+                return message
+
+            await self.app(scope, limited_receive, send)
+            return
 
         # Count actual bytes as well: chunked requests and false Content-Length
         # values must not bypass the cap. Don't execute routes on a partial body.
