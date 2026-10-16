@@ -180,6 +180,9 @@ def _process_and_persist(
     retry_delay_seconds: float | None = None,
 ) -> list[str]:
     """处理AI简报，并在成功或失败后立即保存状态。"""
+    from src.source_manager import list_sources
+    paused = {(s["platform"], str(s["uid"])) for s in list_sources() if not s.get("following", True)}
+    articles = [a for a in articles if (a.get("platform"), str(a.get("source_uid", ""))) not in paused]
     from src import update_history as history_store
     if history_store.uses_sqlite():
         from src.task_worker import submit_articles, ensure_worker
@@ -264,7 +267,11 @@ def _pending_updates(limit: int = 5) -> list[dict]:
     # History is stored with recently touched items first. Resume the oldest
     # unfinished work first so repeated new arrivals cannot starve it.
     history.sort(key=lambda item: str(item.get("detected_at") or ""))
+    from src.source_manager import list_sources
+    paused = {(s["platform"], str(s["uid"])) for s in list_sources() if not s.get("following", True)}
     for item in history:
+        if (item.get("platform"), str(item.get("source_uid", ""))) in paused:
+            continue
         if item.get("is_baseline"):
             continue
         if item.get("ai_status") not in {"", "pending", "processing"}:

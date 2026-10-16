@@ -62,13 +62,13 @@ from src.security.secret_store import (
 )
 from src.source_manager import (
     add_source,
-    delete_source,
     get_source,
     list_sources,
     normalize_source_uid,
     update_source_avatar,
 )
 from src.source_avatars import source_avatar, avatar_url, fetch_source_avatar
+from src.source_lifecycle import change_source_following, delete_source_and_history, source_operation, SourceBusyError
 from src.state_manager import load_state, mark_seen
 from src.storage_lock import interprocess_lock
 from src.storage import atomic_json
@@ -110,11 +110,13 @@ async def lifespan(_app):
     from src.task_worker import submit_articles, ensure_worker
     from src.task_queue import next_due
     history = list_updates(limit=None)
+    paused = {(s["platform"], str(s["uid"])) for s in list_sources() if not s.get("following", True)}
     pending = [item for item in history
-               if needs_ai_summary(item) and item.get("ai_status") in {"", "pending", "processing"}]
+               if needs_ai_summary(item) and item.get("ai_status") in {"", "pending", "processing"}
+               and (item.get("platform"), str(item.get("source_uid", ""))) not in paused]
     _, jobs = submit_articles(pending)
     for item in history:
-        if item.get("ai_summary") and item.get("platform") in {"xiaohongshu", "douyin"} and item.get("last_attempt_status") == "processing":
+        if item.get("ai_summary") and item.get("platform") in {"xiaohongshu", "douyin"} and item.get("last_attempt_status") == "processing" and (item.get("platform"), str(item.get("source_uid", ""))) not in paused:
             _start_visual_reanalysis(item)
     if not jobs and next_due() is not None:
         ensure_worker()
@@ -193,6 +195,10 @@ class SourceCreate(BaseModel):
     uid: str = Field(min_length=1, max_length=2048)
     name: str | None = Field(default=None, max_length=200)
     cookie: str | None = Field(default=None, max_length=65536)
+
+
+class SourceFollowingUpdate(BaseModel):
+    following: bool
 
 
 class IntervalUpdate(BaseModel):
@@ -453,6 +459,8 @@ def _source_payloads(sources: list[dict], history: list[dict]) -> list[dict]:
 
 def _start_baseline_processing(source: dict, articles: list[dict]) -> bool:
     """Submit all pending articles to the durable shared analysis queue."""
+    if not source.get("following", True):
+        return False
     from src.task_worker import submit_articles
     pending = []
     for raw in articles:
@@ -649,6 +657,8 @@ def refresh_source_avatar(platform: str, uid: str) -> dict:
         raise HTTPException(status_code=404, detail="关注对象不存在")
     if value := avatar_url(platform, source.get("avatar")):
         return {"avatar": value}
+    if not source.get("following", True):
+        return {"avatar": source_avatar(source, list_updates(platform=platform, source_uid=uid, limit=None))}
     value = fetch_source_avatar(source)
     if value:
         if update_source_avatar(platform, uid, value) is None:
@@ -665,7 +675,7 @@ def source_detail(platform: str, uid: str, limit: int = 200) -> dict:
     limit = min(2000, max(1, limit))
     return {"source": _source_payload(source, videos), "videos": videos[:limit],
             "has_more": len(videos) > limit, "next_offset": min(limit, len(videos)),
-            "needs_preparation": not videos, "warning": None}
+            "needs_preparation": not videos and source.get("following", True), "warning": None}
 
 
 @app.get("/api/history/{platform}/{current_article_id}")
@@ -679,9 +689,16 @@ def content_item(platform: str, current_article_id: str) -> dict:
 
 @app.post("/api/sources/{platform}/{uid}/prepare")
 def prepare_source_content(platform: str, uid: str) -> dict:
+    with source_operation(platform, uid):
+        return _prepare_source_content(platform, uid)
+
+
+def _prepare_source_content(platform: str, uid: str) -> dict:
     source = get_source(platform, uid)
     if not source:
         raise HTTPException(status_code=404, detail="没有找到这位博主")
+    if not source.get("following", True):
+        return source_detail(platform, uid)
     videos = list_updates(source_uid=uid, platform=platform, limit=None)
     warning = None
     if not videos:
@@ -719,15 +736,40 @@ def prepare_source_content(platform: str, uid: str) -> dict:
 
 
 @app.delete("/api/sources/{platform}/{uid}")
-def remove_source_follow(platform: str, uid: str) -> dict:
-    source = delete_source(platform, uid)
-    if not source:
+def remove_source_follow(platform: str, uid: str, purge_history: bool = False) -> dict:
+    # Old clients promised retention. Require the new dialog's explicit cleanup
+    # flag before changing DELETE into a destructive operation.
+    if not purge_history:
+        return {**update_source_following(platform, uid, SourceFollowingUpdate(following=False)), "removed": False}
+    if get_source(platform, uid) is None:
+        raise HTTPException(status_code=404, detail="没有找到这位博主")
+    try:
+        result = delete_source_and_history(platform, uid)
+    except SourceBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail="删除未完成，博主板块仍保留，请检查本机存储后重试") from exc
+    if not result:
         raise HTTPException(status_code=404, detail="没有找到这位博主")
     return {
-        "removed": True,
-        "retained_history": True,
-        "message": f"已删除对 {source.get('name', '该博主')} 的关注，历史简报仍然保留",
+        "removed": True, "retained_history": False,
+        "history_removed": result["history_removed"], "cache_files_removed": result["cache_files_removed"],
+        "message": f"已删除 {result['source'].get('name', '该博主')}，并清理其历史内容、简报和专属缓存",
     }
+
+
+@app.put("/api/sources/{platform}/{uid}/following")
+def update_source_following(platform: str, uid: str, payload: SourceFollowingUpdate) -> dict:
+    try:
+        result = change_source_following(platform, uid, payload.following)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="没有找到这位博主")
+    source = result["source"]
+    return {"source": _source_payload(source, list_updates(source_uid=uid, platform=platform, limit=None)),
+            "retained_history": True, "cancelled_jobs": result["cancelled_jobs"],
+            "message": f"已重新关注 {source['name']}" if payload.following else f"已不再关注 {source['name']}，仍可在该博主板块查看历史简报"}
 
 
 @app.post("/api/sources/{platform}/{uid}/retry-summaries")

@@ -493,7 +493,7 @@ function bindSourceAvatarFallbacks(container) {
 function renderSources(container, sources) {
   container.innerHTML = sources.length ? sources.map((source) => `<article class="source-card" data-platform="${escapeHtml(source.platform)}" data-uid="${escapeHtml(source.uid)}">
     <div class="source-card-top"><span class="source-avatar" aria-hidden="true">${sourceAvatarContents(source)}</span><h3 class="source-name">${escapeHtml(source.name)}</h3></div>
-    ${["xiaohongshu", "douyin"].includes(source.platform) ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
+    ${source.following === false ? '<p class="source-following-status">不再关注 · 点击查看历史简报</p>' : ["xiaohongshu", "douyin"].includes(source.platform) ? `<div class="setting-help">${escapeHtml(collectionStatusText(source.collection_status))}</div>` : ""}
     <div class="source-stats"><div><strong>${source.new_video_count || 0}</strong>已收录内容</div><div><strong class="source-unread-count">${source.unread_count || 0}</strong>未读</div></div>
   </article>`).join("") : `<div class="empty-state">还没有关注对象，点击右上角添加第一位博主。</div>`;
   $$(".source-card").forEach((card) => card.addEventListener("click", () => loadSourceDetail(card.dataset.platform, card.dataset.uid)));
@@ -993,7 +993,7 @@ async function loadSourceDetail(platform, uid, options = {}) {
     const limit = Math.max(200, previous?.videos?.length || 0);
     let data = await api(limit > 200 ? `${base}?limit=${limit}` : base);
     if (state.sourceRequestId !== requestId) return false;
-    if (data.needs_preparation && options.prepare !== false) {
+    if (data.needs_preparation && data.source.following !== false && options.prepare !== false) {
       data = await api(`${base}/prepare`, {method: "POST"});
       if (state.sourceRequestId !== requestId) return false;
     }
@@ -1004,7 +1004,7 @@ async function loadSourceDetail(platform, uid, options = {}) {
     renderSourceCollection(data, platform, previousContentType);
     if (data.warning) showToast(data.warning, true);
     setView("source-detail");
-    const stillProcessing = data.videos.some((video) => ["pending", "processing"].includes(video.ai_status) || video.last_attempt_status === "processing");
+    const stillProcessing = data.source.following !== false && data.videos.some((video) => ["pending", "processing"].includes(video.ai_status) || video.last_attempt_status === "processing");
     if (state.sourceTimer) clearTimeout(state.sourceTimer);
     state.sourceTimer = stillProcessing ? setTimeout(() => {
       if (state.currentView === "source-detail" && state.sourceRequestId === requestId) loadSourceDetail(platform, uid, {prepare: false});
@@ -1022,8 +1022,13 @@ async function loadSourceDetail(platform, uid, options = {}) {
 
 function renderSourceCollection(data, platform, previousContentType) {
   $("#detail-source-name").textContent = data.source.name;
+  const following = data.source.following !== false;
+  $("#source-following-status").hidden = following;
+  $("#toggle-source-following").textContent = following ? "不再关注" : "重新关注";
+  $("#toggle-source-following").disabled = false;
   $("#detail-source-meta").textContent = `${platformLabel(data.source.platform)} · ${data.source.unread_count || 0} 条未读 · 添加时间：${formatTime(data.source.added_at)} · ${platform === "douyin" ? "首次展示最近3条作品，后续检查公开主页新内容；读取范围有限时会提示" : platform === "xiaohongshu" ? "首次展示最近3条视频或图文，之后增量补抓，每次最多读取20条；超过范围会提示" : "首次展示3条，后续按分页补抓；范围未确认时会提示"}${["xiaohongshu", "douyin"].includes(platform) ? "\n" + collectionStatusText(data.source.collection_status) : ""}`;
-  if (data.source.scan_warning) $("#detail-source-meta").textContent += "\n读取范围：" + data.source.scan_warning;
+  if (!following) $("#detail-source-meta").textContent = `${platformLabel(data.source.platform)} · ${data.source.new_video_count ?? data.videos.length} 条历史内容 · ${data.source.unread_count || 0} 条未读`;
+  if (following && data.source.scan_warning) $("#detail-source-meta").textContent += "\n读取范围：" + data.source.scan_warning;
   $("#source-load-more").hidden = !data.has_more;
   $("#source-load-more").disabled = false;
   state.sourceContentType = ["zhihu", "douyin", "xiaohongshu"].includes(platform) ? previousContentType : "video";
@@ -1055,9 +1060,9 @@ function renderSourceCollection(data, platform, previousContentType) {
     renderUpdates(section.querySelector(".content-type-list"), grouped[type], `暂无${type}。`);
     });
   }
-  if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">暂时还没有可展示的内容，之后发布的视频与图文会自动收录。</div>`;
+  if (!data.videos.length) detailContainer.innerHTML = `<div class="empty-state">${following ? "暂时还没有可展示的内容，之后发布的视频与图文会自动收录。" : "这位博主已不再关注，暂无保留的历史内容。重新关注后才会继续抓取。"}</div>`;
   const failedCount = data.videos.filter((video) => ["bilibili", "article", "zvideo", "video", "image_note"].includes(video.platform === "bilibili" ? "bilibili" : video.content_type) && video.ai_status === "error").length;
-  $("#retry-source-summaries").hidden = failedCount === 0;
+  $("#retry-source-summaries").hidden = failedCount === 0 || !following;
   $("#retry-source-summaries").textContent = `重试失败简报（${failedCount}）`;
 }
 
@@ -1103,7 +1108,7 @@ function closeDeleteSourceModal() {
 function openDeleteSourceModal() {
   if (!state.sourcePlatform || !state.sourceUid) return;
   state.deleteSourceTarget = { platform: state.sourcePlatform, uid: state.sourceUid, name: state.sourceName };
-  $("#delete-source-message").textContent = `确定要从关注列表删除“${state.deleteSourceTarget.name || "这位博主"}”吗？`;
+  $("#delete-source-message").textContent = `确定要删除“${state.deleteSourceTarget.name || "这位博主"}”及其历史内容和简报吗？`;
   $("#delete-source-modal").hidden = false;
   $("#confirm-delete-source").focus();
 }
@@ -1115,7 +1120,7 @@ async function confirmDeleteSource() {
   const requestId = state.sourceRequestId;
   button.disabled = true;
   try {
-    const data = await api(`/api/sources/${encodeURIComponent(target.platform)}/${encodeURIComponent(target.uid)}`, { method: "DELETE" });
+    const data = await api(`/api/sources/${encodeURIComponent(target.platform)}/${encodeURIComponent(target.uid)}?purge_history=true`, { method: "DELETE" });
     if (state.deleteSourceTarget === target) closeDeleteSourceModal();
     if (
       state.currentView === "source-detail" && state.sourceRequestId === requestId
@@ -1133,6 +1138,30 @@ async function confirmDeleteSource() {
   } finally {
     button.disabled = false;
   }
+}
+
+let sourceFollowingRequestId = 0;
+
+async function toggleSourceFollowing() {
+  const source = state.sourceDetailData?.source;
+  const button = $("#toggle-source-following");
+  if (!source || button.disabled) return;
+  const requestId = ++sourceFollowingRequestId;
+  const detailRequestId = state.sourceRequestId;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/sources/${encodeURIComponent(source.platform)}/${encodeURIComponent(source.uid)}/following`, {
+      method: "PUT", body: JSON.stringify({ following: source.following === false }),
+    });
+    if (state.currentView === "source-detail" && state.sourceRequestId === detailRequestId
+      && state.sourcePlatform === source.platform && state.sourceUid === source.uid) {
+      state.sourceDetailData.source = data.source;
+      renderSourceCollection(state.sourceDetailData, source.platform, state.sourceContentType);
+    }
+    showToast(data.message);
+    await loadSources();
+  } catch (error) { showToast(error.message, true); }
+  finally { if (sourceFollowingRequestId === requestId) button.disabled = false; }
 }
 
 async function loadTaskStatus() {
@@ -1679,6 +1708,7 @@ function bindEvents() {
   $("#source-platform").addEventListener("change", syncSourceFormPlatform);
   $("#retry-source-summaries").addEventListener("click", retrySourceSummaries);
   $("#delete-source").addEventListener("click", openDeleteSourceModal);
+  $("#toggle-source-following").addEventListener("click", toggleSourceFollowing);
   $("#close-delete-source-modal").addEventListener("click", closeDeleteSourceModal);
   $("#cancel-delete-source").addEventListener("click", closeDeleteSourceModal);
   $("#confirm-delete-source").addEventListener("click", confirmDeleteSource);

@@ -71,12 +71,20 @@ def enqueue(article, *, reanalyze=False, max_attempts=2, retry_delay=300, now=No
     content_id = str(article.get("article_id") or article.get("video_id") or article.get("id") or "")
     if not platform or not content_id:
         raise ValueError("任务缺少平台或内容标识")
+    from .source_manager import get_source
+    source = get_source(platform, str(article.get("source_uid", "")))
+    if source and not source.get("following", True) and not reanalyze:
+        from .source_lifecycle import SourceNotFollowedError
+        raise SourceNotFollowedError("这位博主已不再关注，已忽略自动分析任务")
     version = analysis_version(article, reanalyze)
     payload = dict(article, article_id=content_id, _reanalyze=reanalyze)
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
     database = _db()
     with database.connection() as db:
         db.execute("BEGIN IMMEDIATE")
+        if database.source_deleted(db, platform, article.get("source_uid", "")):
+            from .source_lifecycle import SourceDeletedError
+            raise SourceDeletedError("博主已删除，已忽略旧任务")
         active = db.execute("SELECT * FROM jobs WHERE platform=? AND content_id=? AND state IN ('queued','running','retry_wait')", (platform, content_id)).fetchone()
         if active:
             db.commit()

@@ -221,13 +221,83 @@ async function main() {
     await display(h, 'B');
     const deletion = h.context.confirmDeleteSource();
     const request = h.requests.at(-1);
-    assert.equal(request.url, '/api/sources/xiaohongshu/A');
+    assert.equal(request.url, '/api/sources/xiaohongshu/A?purge_history=true');
     assert.equal(request.options.method, 'DELETE');
     request.resolve({message: 'removed A'});
     await deletion;
     assert.equal(h.state.currentView, 'source-detail');
     assert.equal(h.state.sourceUid, 'B');
     assert.equal(h.state.sourceDetailData.source.uid, 'B');
+  });
+
+  await check('unfollow keeps the detail and history accessible, and can be resumed', async () => {
+    const h = harness();
+    await display(h, 'A', [{article_id: 'cached', platform: 'xiaohongshu', content_type: 'image_note', ai_summary: 'saved briefing'}]);
+    const history = h.state.sourceDetailData.videos;
+    let pending = h.context.toggleSourceFollowing();
+    let request = h.requests.at(-1);
+    assert.equal(request.url, '/api/sources/xiaohongshu/A/following');
+    assert.equal(request.options.method, 'PUT');
+    assert.equal(JSON.parse(request.options.body).following, false);
+    request.resolve({source: {...h.state.sourceDetailData.source, following: false}, message: '历史简报仍可查看'});
+    await pending;
+    assert.equal(h.state.currentView, 'source-detail');
+    assert.equal(h.state.sourceDetailData.videos, history);
+    assert.equal(h.nodes.get('#toggle-source-following').textContent, '重新关注');
+    assert.equal(h.nodes.get('#source-following-status').hidden, false);
+    pending = h.context.toggleSourceFollowing();
+    request = h.requests.at(-1);
+    assert.equal(JSON.parse(request.options.body).following, true);
+    request.resolve({source: {...h.state.sourceDetailData.source, following: true}, message: '重新关注'});
+    await pending;
+    assert.equal(h.nodes.get('#toggle-source-following').textContent, '不再关注');
+    assert.equal(h.nodes.get('#source-following-status').hidden, true);
+    assert.equal(h.state.sourceDetailData.videos, history);
+  });
+
+  await check('an unfollowed source never prepares remote content or polls pending history', async () => {
+    const h = harness();
+    const pending = h.context.loadSourceDetail('xiaohongshu', 'A');
+    const data = detail('A', [{article_id: 'pending', ai_status: 'pending'}]);
+    data.source.following = false;
+    data.needs_preparation = true;
+    h.requests.at(-1).resolve(data);
+    assert.equal(await pending, true);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.state.sourceTimer, null);
+    assert.equal(h.nodes.get('#source-following-status').hidden, false);
+    const container = h.nodes.get('#source-list');
+    h.context.renderSources(container, [data.source]);
+    assert.match(container.innerHTML, /不再关注.*历史简报/);
+  });
+
+  await check('a late follow change cannot replace another source detail', async () => {
+    const h = harness();
+    await display(h, 'A');
+    const pending = h.context.toggleSourceFollowing();
+    const request = h.requests.at(-1);
+    await display(h, 'B');
+    request.resolve({source: {...detail('A').source, following: false}, message: 'A 已不再关注'});
+    await pending;
+    assert.equal(h.state.sourceUid, 'B');
+    assert.equal(h.state.sourceDetailData.source.uid, 'B');
+    assert.equal(h.nodes.get('#toggle-source-following').textContent, '不再关注');
+  });
+
+  await check('permanent deletion explains cleanup; a blocked delete keeps the archive visible', async () => {
+    const h = harness();
+    await display(h, 'A');
+    h.context.openDeleteSourceModal();
+    assert.match(h.nodes.get('#delete-source-message').textContent, /历史内容和简报/);
+    assert.match(html, /将清理这位博主的历史内容、简报和专属媒体缓存，此操作无法撤销/);
+    const pending = h.context.confirmDeleteSource();
+    h.requests.at(-1).reject(new Error('正在分析，请稍后再删除'));
+    await pending;
+    assert.equal(h.state.currentView, 'source-detail');
+    assert.equal(h.state.sourceUid, 'A');
+    assert.equal(h.nodes.get('#delete-source-modal').hidden, false);
+    assert.equal(h.nodes.get('#confirm-delete-source').disabled, false);
+    assert.match(h.nodes.get('#toast').textContent, /正在分析/);
   });
 
   await check('delete completion cannot cancel navigation still loading', async () => {

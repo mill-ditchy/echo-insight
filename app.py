@@ -11,7 +11,7 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 
 def run_briefing():
     """执行抓取并生成简报。"""
-    sources = list_sources()
+    sources = list_sources(following_only=True)
     if not sources:
         print("\n你还没有关注任何人，先添加关注再抓取吧！")
         return

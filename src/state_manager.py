@@ -27,7 +27,17 @@ def _merge_database_state(state):
         with update_history.database().read_connection() as db:
             for row in db.execute("SELECT key,value FROM metadata WHERE key LIKE 'state:%'"):
                 state["sources"][row["key"][6:]] = json.loads(row["value"])
+    for key in _deleted_sources():
+        state["sources"].pop(key, None)
     return state
+
+
+def _deleted_sources():
+    from . import update_history
+    if STATE_PATH.parent == update_history.DATA_PATH.parent and update_history.database().path.exists():
+        with update_history.database().read_connection() as db:
+            return {row[0].removeprefix("deleted-source:") for row in db.execute("SELECT key FROM metadata WHERE key LIKE 'deleted-source:%'")}
+    return set()
 
 
 def load_state() -> dict:
@@ -83,8 +93,11 @@ def get_new_articles(articles: list[dict], state: dict | None = None) -> list[di
 def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
     with _state_lock, interprocess_lock(STATE_PATH):
         latest = load_state()
+        deleted = _deleted_sources()
         if state and isinstance(state.get("sources"), dict):
             for key, incoming in state["sources"].items():
+                if key in deleted:
+                    continue
                 target = latest["sources"].setdefault(key, dict(incoming))
                 # Disk is newer than the caller's snapshot. Keep its IDs first
                 # so truncation cannot evict content another process just saved.
@@ -98,6 +111,8 @@ def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         for article in articles:
             key = source_key(article)
+            if key in deleted:
+                continue
             source = latest["sources"].setdefault(
                 key,
                 {"name": article.get("source", ""), "seen_ids": []},
@@ -123,6 +138,8 @@ def mark_seen(articles: list[dict], state: dict | None = None) -> dict:
             database.initialize()
             with database.connection() as db, db:
                 for article in articles:
+                    if source_key(article) in deleted:
+                        continue
                     db.execute("INSERT OR IGNORE INTO source_contents VALUES (?,?,?)", (article.get("platform", ""), article_id(article), str(article.get("source_uid", ""))))
                 for key, value in latest["sources"].items():
                     database.set_metadata(db, "state:" + key, value)

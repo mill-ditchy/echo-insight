@@ -146,6 +146,10 @@ class ReliabilityDB:
         return json.loads(row[0]) if row else None
 
     @staticmethod
+    def source_deleted(db, platform, uid):
+        return db.execute("SELECT 1 FROM metadata WHERE key=?", (f"deleted-source:{platform}:{uid}",)).fetchone() is not None
+
+    @staticmethod
     def update_content(db, item):
         """Keep indexed state and the compatibility payload in one update."""
         return db.execute("""UPDATE contents SET source_uid=?,unread=?,baseline=?,ai_status=?,payload=?
@@ -158,6 +162,8 @@ class ReliabilityDB:
         """Batch upserts touch only supplied content, without resaving unrelated history."""
         maximum = db.execute("SELECT COALESCE(MAX(position),0) FROM contents").fetchone()[0]
         for index, item in enumerate(items):
+            if self.source_deleted(db, item.get("platform", ""), item.get("source_uid", "")):
+                continue
             old = db.execute("SELECT position FROM contents WHERE platform=? AND content_id=?",
                              (item["platform"], item["article_id"])).fetchone()
             position = maximum + len(items) - index if promote or old is None else old[0]
@@ -176,6 +182,8 @@ class ReliabilityDB:
     def _save_items(db, items):
         total = len(items)
         for index, item in enumerate(items):
+            if ReliabilityDB.source_deleted(db, item.get("platform", ""), item.get("source_uid", "")):
+                continue
             platform, content_id = str(item.get("platform", "")), str(item["article_id"])
             payload = json.dumps(item, ensure_ascii=False, sort_keys=True, allow_nan=False)
             db.execute("""INSERT INTO contents VALUES (?,?,?,?,?,?,?,?,?)

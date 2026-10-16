@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#f5f7fb">
   <title>赛博情报局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261012-android-layout">
+  <link rel="stylesheet" href="/static/styles.css?v=20261016-source-history">
   <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
   <link rel="stylesheet" href="/static/settings.css?v=20261016-ai-profile-pages">
   <link rel="stylesheet" href="/static/video-lab.css?v=20261016">
@@ -139,10 +139,11 @@
       <section class="view" id="view-source-detail">
         <button class="back-button" id="back-to-sources">← 返回关注列表</button>
         <div class="detail-heading">
-          <div><h2 id="detail-source-name">博主详情</h2><p class="section-description" id="detail-source-meta"></p></div>
+          <div><h2 id="detail-source-name">博主详情</h2><p class="section-description" id="detail-source-meta"></p><p class="source-following-status" id="source-following-status" role="status" hidden>已不再关注，历史简报仍可在此查看，之后不会自动抓取新内容。</p></div>
           <div class="detail-actions">
             <button class="ghost-button" id="retry-source-summaries" hidden>重试失败简报</button>
-            <button class="danger-button" id="delete-source">删除关注</button>
+            <button class="ghost-button" id="toggle-source-following" type="button">不再关注</button>
+            <button class="danger-button" id="delete-source" type="button">删除博主</button>
           </div>
         </div>
         <div class="content-type-menu" id="detail-content-types" hidden></div>
@@ -410,18 +411,18 @@
   <div class="modal-backdrop" id="delete-source-modal" hidden>
     <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title">
       <button class="modal-close" id="close-delete-source-modal" type="button" title="关闭">×</button>
-      <h2 id="delete-source-title">删除关注</h2>
+      <h2 id="delete-source-title">删除博主并清理历史</h2>
       <p class="section-description" id="delete-source-message"></p>
-      <p class="retention-note">已经生成的历史简报和本地缓存会保留，之后不再自动抓取这位博主。</p>
+      <p class="retention-note">将清理这位博主的历史内容、简报和专属媒体缓存，此操作无法撤销。只想停止抓取并保留历史时，请选择“不再关注”。</p>
       <div class="modal-actions">
         <button class="ghost-button" id="cancel-delete-source" type="button">取消</button>
-        <button class="danger-button danger-button-solid" id="confirm-delete-source" type="button">确认删除</button>
+        <button class="danger-button danger-button-solid" id="confirm-delete-source" type="button">确认删除并清理</button>
       </div>
     </div>
   </div>
   <div class="toast" id="toast"></div>
   <!-- companion-scripts -->
-  <script src="/static/app.js?v=20261016-ai-profile-pages"></script>
+  <script src="/static/app.js?v=20261016-source-history-final"></script>
   <script src="/static/video-lab.js?v=20261016"></script>
 </body>
 </html>

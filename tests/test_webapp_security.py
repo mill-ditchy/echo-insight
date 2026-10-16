@@ -77,17 +77,18 @@ class LocalApiSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("audit-secret", response.text)
 
-    def test_delete_source_retains_history(self) -> None:
+    def test_delete_source_cleans_history(self) -> None:
         source = {"name": "测试博主", "platform": "bilibili", "uid": "100"}
-        with patch.object(webapp, "delete_source", return_value=source):
+        with patch.object(webapp, "get_source", return_value=source), patch.object(webapp, "delete_source_and_history", return_value={"source": source, "history_removed": 3, "cache_files_removed": 4}):
             response = self.client.delete(
-                "/api/sources/bilibili/100",
+                "/api/sources/bilibili/100?purge_history=true",
                 headers={"X-Cyber-Request": "1"},
             )
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["removed"])
-        self.assertTrue(response.json()["retained_history"])
+        self.assertFalse(response.json()["retained_history"])
+        self.assertEqual(response.json()["history_removed"], 3)
 
     def test_create_zhihu_source_normalizes_url_and_saves_cookie(self) -> None:
         fetcher = Mock()

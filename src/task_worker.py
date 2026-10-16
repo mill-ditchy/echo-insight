@@ -40,7 +40,11 @@ def submit_articles(articles, *, reanalyze=False, start=True, max_attempts=2, re
             continue
         article = dict(raw)
         article["summary"] = article.get("summary") or article.get("description", "")
-        job, created = task_queue.enqueue(article, reanalyze=reanalyze, max_attempts=max_attempts, retry_delay=retry_delay)
+        from .source_lifecycle import SourceDeletedError
+        try:
+            job, created = task_queue.enqueue(article, reanalyze=reanalyze, max_attempts=max_attempts, retry_delay=retry_delay)
+        except SourceDeletedError:
+            continue
         jobs.append(job["id"])
         active = active or job["state"] in task_queue.ACTIVE
         submitted = submitted or created

@@ -79,7 +79,7 @@ def normalize_source_uid(platform: str, value: str) -> str:
         )
     return f"auto:{value}"
 
-def add_source(platform: str, uid: str, name: str | None = None, *, profile_url: str = "", avatar: str = "") -> bool:
+def add_source(platform: str, uid: str, name: str | None = None, *, profile_url: str = "", avatar: str = "", following: bool = True) -> bool:
     """添加一个关注。"""
     info = PLATFORMS.get(platform)
     if not info:
@@ -113,20 +113,43 @@ def add_source(platform: str, uid: str, name: str | None = None, *, profile_url:
             "platform": platform,
             "uid": uid,
             "category": info["category"],
+            "following": following,
             "added_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             **({"profile_url": profile_url} if platform in {"xiaohongshu", "douyin"} else {}),
             **({"avatar": avatar} if avatar else {}),
         })
         data["sources"] = sources
         _save(data)
+        # Explicitly adding a previously deleted source starts a new follow.
+        from . import update_history
+        store = update_history.database()
+        if CONFIG_PATH.parent.parent == update_history.DATA_PATH.parent.parent and store.path.exists():
+            with store.connection() as db, db:
+                db.execute("DELETE FROM metadata WHERE key=?", (f"deleted-source:{platform}:{uid}",))
 
     print(f"[添加成功] {display_name}")
     return True
 
 
-def list_sources() -> list[dict]:
-    """列出当前所有关注。"""
-    return _load().get("sources", [])
+def list_sources(*, following_only: bool = False) -> list[dict]:
+    """List all visible sources, including retained unfollowed archives."""
+    sources = _load().get("sources", [])
+    return [s for s in sources if s.get("following", True)] if following_only else sources
+
+
+def set_source_following(platform: str, uid: str, following: bool) -> dict | None:
+    if type(following) is not bool:
+        raise ValueError("关注状态无效")
+    with _source_lock, interprocess_lock(CONFIG_PATH):
+        data = _load()
+        for source in data.get("sources", []):
+            if source.get("platform") == platform and str(source.get("uid")) == str(uid):
+                if source.get("deleting"):
+                    raise ValueError("上次删除尚未完成，请重试删除以完成清理")
+                source["following"] = following
+                _save(data)
+                return source
+    return None
 
 
 def update_source_avatar(platform: str, uid: str, avatar: str) -> dict | None:

@@ -130,6 +130,9 @@ def _load_article_data(articles):
 
 def _save_article_data(data, *, promote):
     if not uses_sqlite():
+        if database().path.exists():
+            with database().read_connection() as db:
+                data["items"] = [i for i in data["items"] if not database().source_deleted(db, i.get("platform", ""), i.get("source_uid", ""))]
         _save(data)
         return
     with database().connection() as db, db:

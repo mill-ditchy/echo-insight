@@ -57,7 +57,7 @@ def needs_ai_summary(article: dict) -> bool:
 
 def fetch_metadata() -> tuple[list[dict], list[str]]:
     """只抓取关注源的内容元数据，不读取字幕、不调用AI。"""
-    sources = list_sources()
+    sources = list_sources(following_only=True)
     if not sources:
         print("信息源列表为空，请先添加关注。")
         return [], ["信息源列表为空"]
@@ -90,7 +90,19 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
                                (saved or {}).get("baseline_boundary", 0), checkpoint, saved is None, list(anchors))
         result = None
         try:
-            result = fetcher.scan(uid, context)
+            from .source_lifecycle import source_operation
+            with source_operation(platform, uid):
+                from .source_manager import get_source
+                current_source = get_source(platform, uid)
+                if current_source and not current_source.get("following", True):
+                    continue
+                from . import update_history
+                store = update_history.database()
+                if store.path.exists():
+                    with store.read_connection() as db:
+                        if store.source_deleted(db, platform, uid):
+                            continue
+                result = fetcher.scan(uid, context)
             if not isinstance(result, FetchResult):
                 raise TypeError("平台 scan 必须返回 FetchResult")
             combined = {article_id(item): item for item in [*checkpoint.get("discovered", []), *result.articles]}
@@ -137,6 +149,18 @@ def fetch_metadata() -> tuple[list[dict], list[str]]:
 
 
 def enrich_article(article: dict, progress_callback=None, *, use_cache: bool = True, analysis_config: dict | None = None) -> None:
+    from .source_lifecycle import source_operation, SourceDeletedError
+    from . import update_history
+    with source_operation(article.get("platform", ""), article.get("source_uid", "")):
+        store = update_history.database()
+        if store.path.exists():
+            with store.read_connection() as db:
+                if store.source_deleted(db, article.get("platform", ""), article.get("source_uid", "")):
+                    raise SourceDeletedError("博主已删除，已停止旧任务")
+        return _enrich_article(article, progress_callback, use_cache=use_cache, analysis_config=analysis_config)
+
+
+def _enrich_article(article: dict, progress_callback=None, *, use_cache: bool = True, analysis_config: dict | None = None) -> None:
     """为B站视频或知乎长内容生成AI简报；失败时抛出异常。"""
     if not needs_ai_summary(article):
         article["ai_status"] = "not_applicable"

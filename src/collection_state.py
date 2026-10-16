@@ -23,6 +23,8 @@ def record_scan(platform, uid, result, error="", anchor_ids=()):
     database = update_history.database()
     database.initialize()
     with interprocess_lock(database.path), database.connection() as db, db:
+        if database.source_deleted(db, platform, uid):
+            return
         key = f"scan:{platform}:{uid}"
         row = db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
         value = json.loads(row[0]) if row else {}
