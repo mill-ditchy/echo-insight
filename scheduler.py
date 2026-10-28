@@ -15,7 +15,13 @@ from src.ai_protocol import is_transient_error as _is_transient_processing_error
 
 def _configure_console_encoding() -> None:
     """避免 Windows 计划任务的 GBK 控制台被视频标题中的 emoji 打断。"""
-    for stream in (sys.stdout, sys.stderr):
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is None:
+            # pythonw has no console streams; third-party progress output and
+            # logging.StreamHandler still need a writable stream.
+            stream = open(os.devnull, "w", encoding="utf-8")
+            setattr(sys, name, stream)
         if hasattr(stream, "reconfigure"):
             try:
                 stream.reconfigure(encoding="utf-8", errors="replace")
@@ -325,12 +331,8 @@ def run_once(
         )
         if partial_failure:
             initialize_message += f"；{partial_failure}"
-        _safe_error_notification(
-            "赛博情报局定时更新已启用",
-            initialize_message + "。之后只提醒新内容。",
-        )
         logging.info("初始化完成，已记录 %s 条现有内容", len(articles))
-        record_check(
+        _record_check_result(
             "warning" if partial_failure else "success",
             len(articles),
             0,
@@ -369,6 +371,7 @@ def run_once(
         if new_articles:
             record_updates(new_articles)
             mark_seen(new_articles, state)
+            _notify_new_content(new_articles)
             write_update_report(new_articles)
         from src.collection_state import acknowledge_scans
         acknowledge_scans(load_state())
@@ -381,12 +384,10 @@ def run_once(
         message = f"检查完成，发现 {len(new_articles)} 条新内容；{len(waiting)} 条简报由后台队列处理"
         if partial_failure:
             message += f"；{partial_failure}"
-        record_check("warning" if partial_failure else "success", len(articles), len(new_articles), message)
-        if new_articles:
-            _safe_error_notification("赛博情报局发现新内容", message)
+        _record_check_result("warning" if partial_failure else "success", len(articles), len(new_articles), message)
         return len(new_articles)
     if not new_articles:
-        logging.info("新增内容判断：0 条；本次不发送桌面通知")
+        logging.info("新增内容判断：0 条；正常完成时不发送桌面通知")
         if pending:
             logging.info(
                 "发现 %s 条上次未完成的AI简报，继续处理：%s",
@@ -402,17 +403,9 @@ def run_once(
                 if partial_failure:
                     error_message += f"；{partial_failure}"
                 logging.error("待处理AI简报生成失败：%s", error_message)
-                record_check("error", len(articles), 0, error_message)
-                _safe_error_notification(
-                    "赛博情报局AI简报生成失败",
-                    f"{error_message[:300]}。视频更新记录仍然保留。",
-                )
+                _record_check_result("error", len(articles), 0, error_message)
                 return 0
-            _safe_error_notification(
-                "赛博情报局简报生成完成",
-                f"{len(pending)} 条上次中断的视频已完成解析并生成简报。",
-            )
-            record_check(
+            _record_check_result(
                 "warning" if partial_failure else "success",
                 len(articles),
                 0,
@@ -420,7 +413,7 @@ def run_once(
                 + (f"；{partial_failure}" if partial_failure else ""),
             )
             return 0
-        record_check(
+        _record_check_result(
             "warning" if partial_failure else "success",
             len(articles),
             0,
@@ -448,6 +441,7 @@ def run_once(
     report_path = write_update_report(new_articles)
     sources = sorted({article.get("source", "未知来源") for article in new_articles})
     mark_seen(new_articles, state)
+    _notify_new_content(new_articles)
     logging.info("新内容已进入解析队列，初始报告保存到 %s", report_path)
 
     bilibili_articles = [
@@ -467,11 +461,7 @@ def run_once(
         if partial_failure:
             error_message += f"；{partial_failure}"
         logging.error("新内容解析过程中出现失败：%s", error_message)
-        record_check("error", len(articles), len(new_articles), error_message)
-        _safe_error_notification(
-            "赛博情报局AI简报生成失败",
-            f"{error_message[:300]}。新内容已保存，可稍后重试简报。",
-        )
+        _record_check_result("error", len(articles), len(new_articles), error_message)
     else:
         report_path.write_text(format_as_markdown(new_articles), encoding="utf-8")
         logging.info("更新处理完成，AI简报已写入 %s", report_path)
@@ -482,9 +472,8 @@ def run_once(
         )
         if partial_failure:
             completion_message += f" {partial_failure}。"
-        _safe_error_notification("赛博情报局简报生成完成", completion_message)
         logging.info("更新处理完成：%s", completion_message)
-        record_check(
+        _record_check_result(
             "warning" if partial_failure else "success",
             len(articles),
             len(new_articles),
@@ -493,6 +482,29 @@ def run_once(
             + (f"；{partial_failure}" if partial_failure else ""),
         )
     return len(new_articles)
+
+
+def _notify_new_content(articles: list[dict]) -> None:
+    if not articles:
+        return
+    sources = list(dict.fromkeys(str(article.get("source") or "未知来源") for article in articles))
+    source_text = "、".join(sources[:3]) + ("等" if len(sources) > 3 else "")
+    _safe_error_notification("回声洞察 · 有新内容", f"发现 {len(articles)} 条新内容，来自{source_text}。打开“最新消息”查看。")
+
+
+def _notify_failure(message: str) -> None:
+    _safe_error_notification(
+        "回声洞察 · 运行失败",
+        f"{message[:350]}。请打开“检查历史”或“设置 → 后台任务”查看。",
+    )
+
+
+def _record_check_result(status: str, fetched: int, new: int, message: str) -> None:
+    record_check(status, fetched, new, message)
+    # These failures have already exhausted per-item retries, or are partial
+    # fetch results that will not enter the outer retry loop.
+    if status in {"warning", "error"}:
+        _notify_failure(message)
 
 
 def _safe_error_notification(title: str, message: str) -> None:
@@ -522,26 +534,18 @@ def run_with_retry(
                 record_check("error", None, None, short_error)
             except Exception:
                 # A corrupt or unwritable history must not suppress the retry
-                # and notification for the original failure.
+                # for the original failure or its final desktop notification.
                 logging.exception("保存检查失败记录时出错")
             if attempt < total_attempts - 1:
-                minutes = max(1, round(retry_delay_seconds / 60))
-                _safe_error_notification(
-                    "赛博情报局更新失败",
-                    f"{short_error}。将在 {minutes} 分钟后自动重试。",
-                )
                 time.sleep(max(0, retry_delay_seconds))
             else:
-                _safe_error_notification(
-                    "赛博情报局连续更新失败",
-                    f"{short_error}。请检查网络、API Key和配置，必要时更新程序。",
-                )
+                _notify_failure(f"自动检查尝试 {total_attempts} 次后仍然失败：{short_error}")
                 return 1
     return 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="赛博情报局自动更新")
+    parser = argparse.ArgumentParser(description="回声洞察后台自动更新")
     parser.add_argument("--initialize", action="store_true", help="把当前内容记录为初始基准")
     parser.add_argument("--test-notification", action="store_true", help="只测试Windows桌面通知")
     parser.add_argument("--retry-delay-seconds", type=int, default=None, help=argparse.SUPPRESS)
@@ -559,8 +563,8 @@ def main() -> int:
     try:
         if args.test_notification:
             WindowsNotifier.notify(
-                "赛博情报局通知测试",
-                "Windows桌面通知连接成功。之后发现新视频或运行失败时会在这里提醒。",
+                "回声洞察通知测试",
+                "Windows桌面通知连接成功。发现新内容或最终执行失败时提醒，没有更新时保持安静。",
             )
             logging.info("桌面通知测试成功")
             return 0
@@ -579,6 +583,10 @@ def main() -> int:
             retry_attempts=retry_attempts,
             retry_delay_seconds=retry_delay_seconds,
         )
+    except Exception as exc:
+        logging.exception("自动更新启动或执行失败")
+        _notify_failure(f"自动更新启动或执行失败：{str(exc)[:300]}")
+        return 1
     finally:
         instance_lock.release()
 

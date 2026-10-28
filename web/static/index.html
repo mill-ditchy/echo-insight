@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#f5f7fb">
-  <title>赛博情报局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261016-briefing-retry">
-  <link rel="stylesheet" href="/static/mobile.css?v=20261012-android-layout">
-  <link rel="stylesheet" href="/static/settings.css?v=20261016-ai-profile-pages">
-  <link rel="stylesheet" href="/static/video-lab.css?v=20261016">
+  <meta name="theme-color" content="#f4eddd">
+  <title>回声洞察</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261018-paper-study">
+  <link rel="stylesheet" href="/static/mobile.css?v=20261028-nav-fix">
+  <link rel="stylesheet" href="/static/settings.css?v=20261018-paper-study">
+  <link rel="stylesheet" href="/static/video-lab.css?v=20261018-paper-study">
   <!-- companion-styles -->
 </head>
 <body>
@@ -16,7 +16,7 @@
     <aside class="sidebar" aria-label="主导航">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 19 5"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg></div>
-        <div class="brand-copy"><strong>赛博情报局</strong><span>个人情报工作台</span></div>
+        <div class="brand-copy"><strong>回声洞察</strong><span>个人阅读工作台</span></div>
       </div>
       <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧边栏" aria-expanded="true" aria-controls="primary-nav" title="收起侧边栏">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/><path class="toggle-chevron" d="m16 9-3 3 3 3"/></svg>
@@ -38,7 +38,7 @@
     <main class="main-content">
       <header class="topbar">
         <div>
-          <p class="mobile-eyebrow">赛博情报局</p>
+          <p class="mobile-eyebrow">回声洞察</p>
           <h1 id="view-title">最新消息</h1>
         </div>
         <button class="ghost-button mobile-check-button" id="mobile-check-now" type="button" aria-label="立即检查更新" title="立即检查更新"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 3l1 3M4 12l1 3a8 8 0 0 0 13 3"/></svg></button>
@@ -201,7 +201,6 @@
             <button class="settings-entry" type="button" data-settings-page="display"><span class="settings-entry-icon" aria-hidden="true">Aa</span><span><strong>字体与阅读</strong><small>调整界面和简报正文的文字大小</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="schedule"><span class="settings-entry-icon" aria-hidden="true">◷</span><span><strong>自动检查</strong><small>设置关注内容的检查间隔</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="video"><span class="settings-entry-icon" aria-hidden="true">▷</span><span><strong>视频理解</strong><small>调整画面采样、文字识别与分析方式</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
-            <button class="settings-entry" type="button" data-settings-page="knowledge"><span class="settings-entry-icon" aria-hidden="true">▤</span><span><strong>人物与作品资料</strong><small>管理人物、作品及相关资料</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
             <button class="settings-entry" type="button" data-settings-page="history"><span class="settings-entry-icon" aria-hidden="true">≡</span><span><strong>检查历史</strong><small>查看最近的运行结果与异常记录</small></span><span class="settings-entry-arrow" aria-hidden="true">›</span></button>
           </nav>
         </div>
@@ -317,22 +316,6 @@
               <button class="primary-button" type="submit">保存视频理解设置</button><div class="setting-result" id="video-analysis-result"></div>
             </form>
           </div>
-          <div class="panel settings-panel" data-settings-panel="knowledge" hidden>
-            <div class="panel-title"><h3>人物与作品资料</h3><span>支持持续补充</span></div>
-            <p class="setting-help">按需添加人物、作品及相关背景资料，记录名称、说明和可靠来源，也可附上参考图。资料用于辅助核对内容，不限定题材；无需添加资料也能使用视频分析。</p>
-            <div id="media-knowledge-list"></div>
-            <form id="media-knowledge-form" class="api-key-form">
-              <label for="knowledge-name">人物或作品名称</label><input id="knowledge-name" maxlength="200" required>
-              <label for="knowledge-work">所属作品（可选）</label><input id="knowledge-work" maxlength="200">
-              <label for="knowledge-variant">版本或形象（可选）</label><input id="knowledge-variant" maxlength="200">
-              <label for="knowledge-appearance">辨识特征（可选）</label><textarea id="knowledge-appearance" rows="2" maxlength="2000"></textarea>
-              <label for="knowledge-aliases">别名（用逗号分隔，可选）</label><input id="knowledge-aliases" maxlength="2000">
-              <label for="knowledge-text">资料正文</label><textarea id="knowledge-text" rows="4" maxlength="6000" required></textarea>
-              <label for="knowledge-source">资料来源链接</label><input id="knowledge-source" type="url" placeholder="https://…" maxlength="2048" required>
-              <label for="knowledge-images">参考图（可选，最多5张）</label><input id="knowledge-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
-              <button class="primary-button" type="submit">添加资料</button><div class="setting-result" id="media-knowledge-result"></div>
-            </form>
-          </div>
           <div class="panel settings-panel" data-settings-panel="schedule" hidden>
             <div class="panel-title"><h3>自动检查</h3><span>检查间隔</span></div>
             <p class="setting-help">修改后会同步更新Windows计划任务。</p>
@@ -424,7 +407,7 @@
   </div>
   <div class="toast" id="toast"></div>
   <!-- companion-scripts -->
-  <script src="/static/app.js?v=20261016-briefing-retry"></script>
-  <script src="/static/video-lab.js?v=20261016"></script>
+  <script src="/static/app.js?v=20261018-paper-study"></script>
+  <script src="/static/video-lab.js?v=20261028-playback-fix"></script>
 </body>
 </html>

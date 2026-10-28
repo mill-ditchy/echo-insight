@@ -246,13 +246,13 @@ def main(*, login_xiaohongshu: bool = False) -> None:
 
         desktop_api = DesktopApi()
         main_window = webview.create_window(
-            "赛博情报局",
+            "回声洞察",
             f"http://{HOST}:{port}",
             js_api=desktop_api,
             width=1240,
             height=820,
             min_size=(980, 680),
-            background_color="#07111f",
+            background_color="#f4eddd",
         )
         if login_xiaohongshu:
             def open_login():

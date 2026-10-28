@@ -14,6 +14,7 @@ from . import task_queue, update_history
 from .storage_lock import interprocess_lock
 from .ai_protocol import is_transient_error
 from .analysis_config import load_analysis_config, public_analysis_config, config_fingerprint
+from .notifiers.windows import WindowsNotifier
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,9 +25,16 @@ def ensure_worker():
     # loser exits without claiming or duplicating work.
     log_path = update_history.DATA_PATH.parent / "worker.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    executable = Path(sys.executable)
+    # A console interpreter with redirected handles keeps pythonw-launched
+    # workers' logs usable. CREATE_NO_WINDOW prevents a terminal from appearing.
+    console_python = executable.with_name("python.exe")
+    if executable.name.lower() == "pythonw.exe" and console_python.is_file():
+        executable = console_python
     with log_path.open("ab") as stream:
-        subprocess.Popen([sys.executable, "-m", "src.task_worker", "--history", str(update_history.DATA_PATH)],
-                         cwd=ROOT, stdout=stream, stderr=stream,
+        # Redirected Windows streams otherwise use GBK, which rejects emoji in titles.
+        subprocess.Popen([str(executable), "-X", "utf8", "-m", "src.task_worker", "--history", str(update_history.DATA_PATH)],
+                         cwd=ROOT, stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
@@ -113,34 +121,47 @@ def execute(job):
                                publish=lambda db, state: _publish(db, job, article, state, error))
 
 
+def _notify_analysis_failure(count):
+    message = (f"有 {count} 条AI简报最终分析失败。" if count else "后台分析进程意外停止。")
+    try:
+        WindowsNotifier.notify("回声洞察 · 分析失败", message + "请打开“设置 → 后台任务”查看原因或重新分析。")
+    except Exception:
+        logging.exception("桌面通知发送失败")
+
+
 def run_worker():
     owner = f"{os.getpid()}-{uuid.uuid4().hex}"
+    acquired = False
     try:
         with interprocess_lock(update_history.DATA_PATH.with_suffix(".worker.lock"), timeout=15):
+            acquired = True
             idle_since = time.monotonic()
-            completed, failed = 0, 0
+            failed_count = 0
             while True:
                 job = task_queue.claim(owner)
                 if job:
                     if execute(job):
                         state = task_queue.job_state(job["id"])
-                        completed += state == "succeeded"
-                        failed += state == "failed"
+                        logging.info("后台分析任务 %s 结束：%s", job["id"], state)
+                        if state == "failed":
+                            failed_count += 1
                     idle_since = time.monotonic()
                     continue
-                if completed or failed:
-                    from .notifiers.windows import WindowsNotifier
-                    try:
-                        WindowsNotifier.notify("赛博情报局后台分析结果", f"{completed} 条简报已完成，{failed} 条需要处理。可在设置的后台任务中查看。")
-                    except Exception:
-                        logging.exception("任务结果通知失败")
-                    completed, failed = 0, 0
+                # Combine failures from this batch; retries, cancellations and
+                # historical failures never generate a desktop notification.
+                if failed_count:
+                    _notify_analysis_failure(failed_count)
+                    failed_count = 0
                 due = task_queue.next_due()
                 if due is None and time.monotonic() - idle_since > 10:
                     return
                 time.sleep(min(5, max(0.2, (due or time.time() + 1) - time.time())))
-    except TimeoutError:
-        return
+    except Exception as exc:
+        if isinstance(exc, TimeoutError) and not acquired:
+            return  # Another worker owns the queue; this is a normal exit.
+        logging.exception("后台分析进程异常停止")
+        _notify_analysis_failure(0)
+        raise
 
 
 if __name__ == "__main__":

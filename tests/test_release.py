@@ -144,11 +144,15 @@ class ReleaseTests(unittest.TestCase):
                 self.assertTrue(release.allowed_path(name))
 
     def test_forced_companion_source_blocks_default_windows_release(self):
-        self.write("android/assets/native.js", "// companion source\n")
-        self.git("add", "--force", "android/assets/native.js")
+        paths = ("android/assets/native.js", "scripts/android_usb.py")
+        for name in paths:
+            self.write(name, "# companion source\n")
+            self.git("add", "--force", name)
         with self.assertRaisesRegex(release.ReleaseError, "unexpected"):
             release.check(self.root)
-        self.assertIn("android/assets/native.js", release.check(self.root, include_companion=True))
+        blobs = release.check(self.root, include_companion=True)
+        for name in paths:
+            self.assertIn(name, blobs)
 
     def test_forced_companion_signing_file_fails_release_scan(self):
         self.write("android/res/raw/signing.p12", "private signing material")

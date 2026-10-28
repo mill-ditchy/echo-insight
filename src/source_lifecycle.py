@@ -184,6 +184,9 @@ def delete_source_and_history(platform, uid):
                             if str(json.loads(j["payload"]).get("source_uid", "")) == uid or (platform, j["content_id"]) in keys]
                     if any(j["state"] == "running" and j["lease_until"] > time.time() for j in jobs):
                         raise SourceBusyError("这位博主仍有简报正在分析，请完成后再删除；也可先选择“不再关注”")
+                    shared_items = {item["article_id"]: (item, other_uid) for item, other_uid in shared}
+                    transferred_jobs = [j for j in jobs if j["content_id"] in shared_items]
+                    jobs = [j for j in jobs if j["content_id"] not in shared_items]
                     remaining = []
                     for row in db.execute("SELECT payload FROM contents"):
                         item = json.loads(row[0])
@@ -217,6 +220,14 @@ def delete_source_and_history(platform, uid):
                             other_source = source_manager.get_source(platform, other_uid)
                             item["source"] = (other_source or {}).get("name", item.get("source", ""))
                             store.update_content(db, item)
+                    for job in transferred_jobs:
+                        item, other_uid = shared_items[job["content_id"]]
+                        payload = json.loads(job["payload"])
+                        payload.update(source_uid=other_uid, source=item.get("source", ""))
+                        # Preserve queued/retry state and attempt history so shared
+                        # content can still finish after its original source is gone.
+                        db.execute("UPDATE jobs SET payload=? WHERE id=?",
+                                   (json.dumps(payload, ensure_ascii=False, allow_nan=False), job["id"]))
                     for item in exclusive:
                         db.execute("DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM jobs WHERE platform=? AND content_id=?)", (platform, item["article_id"]))
                         db.execute("DELETE FROM jobs WHERE platform=? AND content_id=?", (platform, item["article_id"]))

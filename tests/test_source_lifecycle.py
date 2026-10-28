@@ -193,6 +193,69 @@ class SourceLifecycleTests(unittest.TestCase):
         self.assertEqual(item["source"], "其他博主")
         self.assertTrue(shared.exists())
 
+    def test_shared_content_keeps_queued_and_retry_tasks_under_remaining_source(self):
+        now = time.time()
+        retry_article = article("xhs_shared_retry", ai_status="pending", ai_summary="")
+        update_history.record_updates([retry_article])
+        retry_job, _ = task_queue.enqueue(retry_article, retry_delay=5, now=now)
+        running = task_queue.claim("first-worker", now=now)
+        self.assertEqual(running["id"], retry_job["id"])
+        self.assertTrue(task_queue.complete(running, error="temporary failure", transient=True, now=now + 1))
+
+        queued_article = article("xhs_shared_queued", ai_status="pending", ai_summary="")
+        update_history.record_updates([queued_article])
+        queued_job, _ = task_queue.enqueue(queued_article, now=now + 2)
+        with self.store.connection() as db, db:
+            for item in (retry_article, queued_article):
+                db.execute("INSERT INTO source_contents VALUES (?,?,?)", ("xiaohongshu", item["article_id"], OTHER))
+            original_jobs = {row["id"]: dict(row) for row in db.execute("SELECT * FROM jobs")}
+            original_attempts = [dict(row) for row in db.execute("SELECT * FROM job_attempts")]
+
+        response = self.delete()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(source_manager.get_source("xiaohongshu", UID))
+        with self.store.read_connection() as db:
+            migrated = {row["id"]: dict(row) for row in db.execute("SELECT * FROM jobs")}
+            self.assertEqual([dict(row) for row in db.execute("SELECT * FROM job_attempts")], original_attempts)
+        self.assertEqual(set(migrated), {retry_job["id"], queued_job["id"]})
+        for job_id, job in migrated.items():
+            with self.subTest(job_id=job_id):
+                self.assertEqual({k: v for k, v in job.items() if k != "payload"},
+                                 {k: v for k, v in original_jobs[job_id].items() if k != "payload"})
+                payload = json.loads(job["payload"])
+                self.assertEqual(payload["source_uid"], OTHER)
+                self.assertEqual(payload["source"], "其他博主")
+                item = update_history.get_update("xiaohongshu", job["content_id"])
+                self.assertEqual(item["source_uid"], OTHER)
+                self.assertEqual(item["ai_status"], "pending")
+
+        claimed = set()
+        for _ in migrated:
+            job = task_queue.claim("new-worker", now=now + 20)
+            self.assertIsNotNone(job)
+            claimed.add(job["id"])
+            self.assertEqual(json.loads(job["payload"])["source_uid"], OTHER)
+            self.assertTrue(task_queue.complete(job, now=now + 21))
+        self.assertEqual(claimed, set(migrated))
+
+    def test_shared_content_running_task_still_blocks_source_deletion(self):
+        first = article(ai_status="pending", ai_summary="")
+        update_history.record_updates([first])
+        job, _ = task_queue.enqueue(first)
+        running = task_queue.claim("worker")
+        self.assertEqual(running["id"], job["id"])
+        with self.store.connection() as db, db:
+            db.execute("INSERT INTO source_contents VALUES (?,?,?)", ("xiaohongshu", first["article_id"], OTHER))
+        before = source_manager.CONFIG_PATH.read_bytes()
+        response = self.delete()
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(source_manager.CONFIG_PATH.read_bytes(), before)
+        self.assertEqual(task_queue.job_state(job["id"]), "running")
+        self.assertEqual(update_history.get_update("xiaohongshu", first["article_id"])["source_uid"], UID)
+        with self.store.read_connection() as db:
+            payload = json.loads(db.execute("SELECT payload FROM jobs WHERE id=?", (job["id"],)).fetchone()[0])
+        self.assertEqual(payload["source_uid"], UID)
+
     def test_orphan_job_cache_is_also_cleaned(self):
         task_queue.enqueue(article())
         cache = self.write("summaries/xhs_target.json", {"content": "尚未发布的缓存"})

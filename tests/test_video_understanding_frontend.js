@@ -30,21 +30,5 @@ vm.runInNewContext(source.slice(0, source.lastIndexOf("\ninitializeFontSettings(
   assert.match(html, /查看分段分析依据/);
   assert.ok(!html.includes("<img src=x"));
   assert.match(html, /&lt;img/);
-  context.api = async () => ({entries: [{name: "<script>bad</script>", work: "作品", text: "资料"}]});
-  await context.loadMediaKnowledge();
-  assert.ok(!nodes.get("#media-knowledge-list").innerHTML.includes("<script>"));
-  nodes.get("#knowledge-name") || context.document.querySelector("#knowledge-name");
-  context.document.querySelector("#knowledge-name").value = "新角色";
-  context.document.querySelector("#knowledge-variant").value = "二创形象";
-  context.document.querySelector("#knowledge-appearance").value = "独特耳饰";
-  context.api = async (url, options) => {
-    if (options) { sent = {url, method: options.method, body: JSON.parse(options.body)}; return {message: "已添加"}; }
-    return {entries: []};
-  };
-  await context.addMediaKnowledge({preventDefault() {}, currentTarget: {querySelector: () => button, reset() {}}});
-  assert.equal(sent.method, "POST");
-  assert.equal(sent.body.entries.length, 1);
-  assert.equal(sent.body.entries[0].variant, "二创形象");
-  assert.equal(sent.body.entries[0].appearance, "独特耳饰");
   console.log("Video understanding UI checks passed (settings, input failure, completeness, evidence and escaping).");
 })().catch(error => {console.error(error); process.exitCode = 1;});

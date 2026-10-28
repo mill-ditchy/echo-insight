@@ -144,7 +144,7 @@ function safeExternalUrl(value) {
 function showToast(message, error = false) {
   const toast = $("#toast");
   toast.textContent = message;
-  toast.style.borderColor = error ? "#fecaca" : "#bfdbfe";
+  toast.classList.toggle("toast-error", error);
   toast.classList.add("show");
   setTimeout(() => toast.classList.remove("show"), 3600);
 }
@@ -742,7 +742,7 @@ function setView(view) {
     else element.removeAttribute("aria-current");
   });
   const titles = { dashboard: "最新消息", sources: "关注列表", accounts: "账号管理", settings: "设置", "source-detail": "博主详情", briefing: "简报详情", "video-lab": "视频实验" };
-  $("#view-title").textContent = titles[view] || "赛博情报局";
+  $("#view-title").textContent = titles[view] || "回声洞察";
   if (view === "settings") showSettingsPage(null, false);
   if (view === "video-lab") window.VideoLab?.load().catch(error => showToast(error.message, true));
 }
@@ -915,7 +915,7 @@ async function startZhihuLogin(event) {
   if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
-    showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
+    showToast("自动登录仅在回声洞察桌面窗口中可用；请双击启动程序", true);
     return;
   }
   $("#zhihu-login-modal").hidden = false;
@@ -956,7 +956,7 @@ async function startXiaohongshuLogin(event) {
   if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
-    showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
+    showToast("自动登录仅在回声洞察桌面窗口中可用；请双击启动程序", true);
     return;
   }
   $("#xiaohongshu-login-modal").hidden = false;
@@ -1003,7 +1003,7 @@ async function startDouyinLogin(event) {
   if (!allowHostLogin()) return;
   if (event?.target?.closest(".account-logout-button")) return;
   if (!hasDesktopBridge()) {
-    showToast("自动登录仅在赛博情报局桌面窗口中可用；请双击启动程序", true);
+    showToast("自动登录仅在回声洞察桌面窗口中可用；请双击启动程序", true);
     return;
   }
   $("#douyin-login-modal").hidden = false;
@@ -1321,7 +1321,6 @@ async function loadSettings() {
     applyAiProfiles(data.ai_providers || { profiles: [], active_profile_id: null });
     await loadTaskStatus();
     fillVideoAnalysisForm(data.video_analysis || {});
-    await loadMediaKnowledge();
     const current = data.interval_hours;
     $("#interval-options").innerHTML = data.interval_options.map((option) => `<label class="interval-option ${option.hours === current ? "selected" : ""}"><span>${escapeHtml(option.label)}</span><input type="radio" name="interval" value="${option.hours}" ${option.hours === current ? "checked" : ""}></label>`).join("");
     $$("input[name=interval]").forEach((input) => input.addEventListener("change", updateInterval));
@@ -1329,8 +1328,6 @@ async function loadSettings() {
     $("#check-history").innerHTML = history.length ? history.map((item) => `<div class="history-row"><i class="history-state ${item.status === "error" ? "error" : (item.status === "warning" ? "warning" : "")}"></i><div><div class="history-time">${escapeHtml(formatTime(item.checked_at))}</div><div class="history-message">${escapeHtml(item.message)}</div></div></div>`).join("") : `<div class="empty-state">还没有结构化检查记录。</div>`;
   } catch (error) { showToast(error.message, true); }
 }
-
-let mediaKnowledgeEntries = [];
 
 function fillVideoAnalysisForm(settings) {
   $("#video-analysis-enabled").checked = settings.enabled !== false;
@@ -1370,45 +1367,6 @@ async function updateVideoAnalysis(event) {
     fillVideoAnalysisForm(data.video_analysis);
     $("#video-analysis-result").textContent = data.message;
   } catch (error) { $("#video-analysis-result").textContent = error.message; }
-  finally { button.disabled = false; }
-}
-
-async function loadMediaKnowledge() {
-  const data = await api("/api/knowledge");
-  mediaKnowledgeEntries = data.entries || [];
-  const status = data.character_models || {};
-  if (!mediaKnowledgeEntries.length) {
-    $("#media-knowledge-list").innerHTML = `<p class="setting-help">尚未添加资料。可在下方添加自己的资料，也可直接使用视频分析。</p>`;
-    return;
-  }
-  const modelInfo = `<details><summary>可选参考图匹配状态</summary><p class="setting-help">${status.ccip_ready ? "CCIP已安装" : "CCIP未安装"}；${status.wd_ready ? "WD辅助标签已安装" : "WD辅助标签未安装"}。已收录${mediaKnowledgeEntries.filter(e => e.reference_images?.length).length}个有图条目。这些模型主要用于插画角色匹配，不代表通用人物识别能力；资料文本的使用不依赖这些模型。</p></details>`;
-  $("#media-knowledge-list").innerHTML = mediaKnowledgeEntries.map(entry =>
-    `<p class="setting-help"><strong>${escapeHtml(entry.name)}</strong>${entry.work ? ` · ${escapeHtml(entry.work)}` : ""} · ${escapeHtml(entry.variant || "默认形象")} · ${entry.reference_images?.length || 0}张参考图<br>${escapeHtml(entry.text.slice(0, 140))}</p>`
-  ).join("");
-  $("#media-knowledge-list").innerHTML = modelInfo + `<details><summary>查看全部${mediaKnowledgeEntries.length}个资料条目</summary>${$("#media-knowledge-list").innerHTML}</details>`;
-}
-
-async function addMediaKnowledge(event) {
-  event.preventDefault();
-  const button = event.currentTarget.querySelector("button[type=submit]");
-  button.disabled = true;
-  try {
-    const images = [...($("#knowledge-images").files || [])];
-    if (images.length > 5 || images.some(file => file.size > 5 * 1024 * 1024)) throw new Error("参考图最多5张，每张不超过5 MB");
-    const referenceImages = [];
-    for (const file of images) {
-      const uploaded = await api("/api/knowledge/reference-image", {method: "POST", body: file, headers: {"Content-Type": file.type || "application/octet-stream"}});
-      referenceImages.push(uploaded.reference_image);
-    }
-    const entry = {id: `entry_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, name: $("#knowledge-name").value.trim(),
-      work: $("#knowledge-work").value.trim(), aliases: $("#knowledge-aliases").value.split(/[,，]/).map(value => value.trim()).filter(Boolean),
-      variant: $("#knowledge-variant").value.trim() || "默认形象", appearance: $("#knowledge-appearance").value.trim(),
-      text: $("#knowledge-text").value.trim(), source_url: $("#knowledge-source").value.trim(), reference_images: referenceImages, updated_at: new Date().toISOString()};
-    const data = await api("/api/knowledge", {method: "POST", body: JSON.stringify({entries: [entry]})});
-    $("#media-knowledge-result").textContent = data.message;
-    event.currentTarget.reset();
-    await loadMediaKnowledge();
-  } catch (error) { $("#media-knowledge-result").textContent = error.message; }
   finally { button.disabled = false; }
 }
 
@@ -1876,7 +1834,6 @@ function bindEvents() {
   });
   $("#video-analysis-form").addEventListener("submit", updateVideoAnalysis);
   $("#test-video-input").addEventListener("click", testVideoInput);
-  $("#media-knowledge-form").addEventListener("submit", addMediaKnowledge);
   $("#ai-test-connection").addEventListener("click", () => probeAiProvider());
   $("#ai-read-models").addEventListener("click", () => probeAiProvider(true));
   ["#ai-api-url", "#api-key-input", "#ai-model", "#ai-vision-enabled", "#ai-vision-model"].forEach(selector => {

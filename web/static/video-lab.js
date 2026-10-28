@@ -12,6 +12,7 @@ function videoLabLeave() {
   clearTimeout(videoLab.timer);
   videoLab.timer = null;
   videoLab.generation += 1;
+  $("#video-lab-preview").pause();
 }
 
 function videoLabPreview(blob) {
@@ -68,7 +69,6 @@ async function pollVideoLab(videoId, generation) {
 }
 
 async function loadVideoLab() {
-  if (window.CyberHost?.kind === "android") throw new Error("请在电脑端使用视频实验入口");
   const [config] = await Promise.all([api("/api/video-lab/config"), refreshVideoLabHistory()]);
   videoLab.config = config;
   $("#video-lab-model").textContent = `当前模型：${config.model}${config.available ? "" : `；${config.message}`}`;
@@ -89,11 +89,17 @@ async function openVideoLab(videoId) {
   if (videoLab.generation !== generation) return;
   renderVideoLabRecord(record);
   if (record.runs?.length) $("#video-lab-prompt").value = record.runs[record.runs.length - 1].prompt;
-  const response = await fetch(`/api/video-lab/videos/${encodeURIComponent(videoId)}/file`, {headers: {"X-Cyber-Request": "1"}});
-  if (!response.ok) throw new Error("原视频预览读取失败，已有分析回答仍可查看");
-  const blob = await response.blob();
-  if (videoLab.generation !== generation) return;
-  videoLabPreview(blob);
+  if (window.CyberHost?.videoPreviewUrl) {
+    if (videoLab.previewUrl) { URL.revokeObjectURL(videoLab.previewUrl); videoLab.previewUrl = ""; }
+    $("#video-lab-preview").src = window.CyberHost.videoPreviewUrl(videoId);
+    $("#video-lab-preview").hidden = false;
+  } else {
+    const response = await fetch(`/api/video-lab/videos/${encodeURIComponent(videoId)}/file`, {headers: {"X-Cyber-Request": "1"}});
+    if (!response.ok) throw new Error("原视频预览读取失败，已有分析回答仍可查看");
+    const blob = await response.blob();
+    if (videoLab.generation !== generation) return;
+    videoLabPreview(blob);
+  }
   await pollVideoLab(videoId, generation);
 }
 
@@ -133,7 +139,8 @@ async function analyzeVideoLab(event, retry = false) {
   try {
     if (!retry) {
       $("#video-lab-status").textContent = "正在上传原视频…";
-      const uploaded = await api(`/api/video-lab/videos?filename=${encodeURIComponent(file.name)}`, {method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file});
+      const uploaded = window.CyberHost?.uploadVideo ? await window.CyberHost.uploadVideo(file)
+        : await api(`/api/video-lab/videos?filename=${encodeURIComponent(file.name)}`, {method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file});
       videoLab.selectedId = uploaded.id;
       renderVideoLabRecord(uploaded);
     }
@@ -172,8 +179,11 @@ $("#video-lab-history").addEventListener("click", async event => {
   } catch (error) { showToast(error.message, true); }
 });
 $("#video-lab-copy").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText($("#video-lab-answer").textContent); showToast("已复制模型回答"); }
+  try {
+    if (window.CyberHost?.copyText) await window.CyberHost.copyText($("#video-lab-answer").textContent);
+    else await navigator.clipboard.writeText($("#video-lab-answer").textContent);
+    showToast("已复制模型回答");
+  }
   catch (_error) { showToast("无法访问剪贴板，请选中回答文本复制", true); }
 });
-if (window.CyberHost?.kind === "android") $("#video-lab-nav").hidden = true;
 window.VideoLab = Object.freeze({load: loadVideoLab, leave: videoLabLeave});

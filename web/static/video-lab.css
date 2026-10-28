@@ -1,7 +1,7 @@
 .video-lab-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .video-lab-upload, .video-lab-preview, .video-lab-result { padding: 24px; }
 .video-lab-preview h3 { margin: 0; font-size: 17px; }
-.video-lab-preview video { display: block; width: 100%; max-height: 430px; margin-top: 16px; border-radius: 12px; background: #111827; }
+.video-lab-preview video { display: block; width: 100%; max-height: 430px; margin-top: 16px; border-radius: 12px; background: var(--text); }
 .video-lab-preview video[hidden] { display: none; }
 .video-lab-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
 .video-lab-result { margin: 24px 0; }

@@ -26,7 +26,7 @@ VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?")
 COMPANION_FILES = {
     "mobile_server.py", "启动手机连接.ps1", "requirements-mobile.txt", "docs/ANDROID.md", "docs/ANDROID_STANDALONE.md",
     "scripts/build_android.py", "scripts/prepare_android_asr.py", "scripts/preview_mobile.py", "src/security/mobile_access.py",
-    "scripts/android_dev.py", "scripts/serve_android_update.py",
+    "scripts/android_dev.py", "scripts/android_usb.py", "scripts/serve_android_update.py",
     "tests/test_mobile_access.py",
 }
 

@@ -4,15 +4,17 @@ const vm = require("node:vm");
 const {harness} = require("./test_source_navigation_frontend");
 const source = fs.readFileSync(require("node:path").join(__dirname, "../web/static/video-lab.js"), "utf8");
 
-function setup() {
+function setup(hostOptions = {}) {
   const h = harness();
   h.state.currentView = "video-lab";
-  h.nodes.get("#video-lab-preview").pause = () => {};
+  h.playerPauseCount = 0;
+  h.nodes.get("#video-lab-preview").pause = () => { h.playerPauseCount += 1; };
   h.nodes.get("#video-lab-file").files = [];
   h.context.URL = class extends URL {
     static createObjectURL() { return "blob:video-test"; }
     static revokeObjectURL() {}
   };
+  Object.assign(h.context.window.CyberHost, hostOptions);
   vm.runInContext(source, h.context);
   return h;
 }
@@ -76,5 +78,51 @@ const completed = {...record, status: "completed", runs: [{text: "00:00红色；
   resolve({...completed, runs: [{...completed.runs[0], text: "不应覆盖离开后的页面"}]});
   await pending;
   assert.equal(h.nodes.get("#video-lab-answer").textContent, answerBefore);
+  const pauseBeforeNavigation = h.playerPauseCount;
+  h.context.setView("sources");
+  assert.equal(h.playerPauseCount, pauseBeforeNavigation + 1, "Leaving video lab must pause its hidden media player");
+
+  h.state.currentView = "video-lab";
+  state.selectedId = record.id;
+  h.context.api = async url => url === '/api/video-lab/videos' ? {videos: []} : {};
+  const pauseBeforeDelete = h.playerPauseCount;
+  const deleteButton = {dataset: {videoDelete: record.id}};
+  await h.nodes.get('#video-lab-history').listeners.get('click')({target: {
+    closest: selector => selector === '[data-video-delete]' ? deleteButton : null,
+  }});
+  assert.equal(h.playerPauseCount, pauseBeforeDelete + 1, "Deleting the selected video must stop playback before hiding it");
+  assert.equal(state.selectedId, null);
+  assert.equal(h.nodes.get('#video-lab-preview').hidden, true);
+  const mobile = setup({kind: 'android'});
+  const mobileSent = [], mobileUploads = [], copied = [];
+  Object.assign(mobile.context.window.CyberHost, {kind: 'android',
+    uploadVideo: async file => { mobileUploads.push(file); return record; },
+    videoPreviewUrl: id => `https://appassets.androidplatform.net/backend/api/video-lab/videos/${id}/file`,
+    copyText: text => { copied.push(text); },
+  });
+  mobile.context.fetch = () => { throw new Error('Android video previews must use the native streaming URL'); };
+  mobile.context.api = async (url, options = {}) => {
+    mobileSent.push({url, options});
+    if (url.endsWith('/config')) return config;
+    if (url.endsWith('/analyze')) return {...record, status: 'queued'};
+    if (url === '/api/video-lab/videos') return {videos: [record]};
+    return completed;
+  };
+  await mobile.context.window.VideoLab.load();
+  assert.equal(mobile.nodes.get('#video-lab-nav').hidden, false);
+  const phoneFile = {name: '手机视频.mp4', size: 32 * 1048576};
+  mobile.nodes.get('#video-lab-file').files = [phoneFile];
+  mobile.context.selectVideoLabFile();
+  await mobile.context.analyzeVideoLab({preventDefault() {}});
+  assert.equal(mobileUploads.length, 1); assert.equal(mobileUploads[0], phoneFile);
+  assert.ok(!mobileSent.some(request => request.url.includes('?filename=')), 'Large video must bypass the JSON/base64 request adapter');
+  assert.ok(mobileSent.some(request => request.url.endsWith('/analyze')));
+  await mobile.context.openVideoLab(record.id);
+  assert.equal(mobile.nodes.get('#video-lab-preview').src,
+    'https://appassets.androidplatform.net/backend/api/video-lab/videos/' + record.id + '/file');
+  assert.equal(mobile.nodes.get('#video-lab-preview').hidden, false);
+  assert.equal(mobile.nodes.get('#video-lab-answer').textContent, completed.runs[0].text);
+  await mobile.nodes.get('#video-lab-copy').listeners.get('click')();
+  assert.deepEqual(copied, [completed.runs[0].text]);
   console.log("Video upload UI checks passed (original file, retries, retained answers, escaping, size cap and stale polling).");
 })().catch(error => {console.error(error); process.exitCode = 1;});
