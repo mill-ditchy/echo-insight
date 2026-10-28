@@ -59,12 +59,19 @@ def _read_json(path):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def _cache_root():
+    root = OUTPUT_ROOT.absolute()
+    if any(_redirected(parent) for parent in (root, *root.parents)):
+        raise ValueError("缓存目录不能重定向到项目之外")
+    # Windows TEMP can contain an ordinary 8.3 directory alias. Resolve it
+    # after rejecting reparse points, then construct every candidate from here.
+    return root.resolve()
+
+
 def _cache_candidates(items):
     """Only construct paths under known cache folders; never trust stored paths."""
     from .processors.xiaohongshu_images import image_cache_key
-    root = OUTPUT_ROOT.absolute()
-    if _redirected(root) or root.resolve() != root:
-        raise ValueError("缓存目录不能重定向到项目之外")
+    root = _cache_root()
     for folder in ("summaries", "summary_history", "xiaohongshu_images", "douyin_images", "xiaohongshu_analysis"):
         if _redirected(root / folder):
             raise ValueError("缓存中包含重定向目录，已停止删除")
@@ -72,17 +79,17 @@ def _cache_candidates(items):
     for item in items:
         summary_id = summary_cache_id(item.get("platform", ""), item["article_id"])
         ident = summary_id if item.get("platform") == "zhihu" else safe_cache_id(item["article_id"])
-        paths.update(OUTPUT_ROOT / folder / f"{key}.json" for folder, key in
+        paths.update(root / folder / f"{key}.json" for folder, key in
                      (("summaries", summary_id), ("summary_routes", ident), ("transcripts", ident)))
-        paths.update(OUTPUT_ROOT / folder / key for folder, key in
+        paths.update(root / folder / key for folder, key in
                      (("frames", ident), ("video_evidence", ident), ("summary_history", summary_id)))
         for folder in ("audio", "video", "xiaohongshu_video", "douyin_video"):
             for suffix in (".mp4", ".m4a", ".m4s", ".webm", ".wav", ".mp3"):
-                paths.add(OUTPUT_ROOT / folder / (ident + suffix))
+                paths.add(root / folder / (ident + suffix))
         # Include previous successful versions when identifying image evidence.
         evidence = list(item.get("ai_note_evidence") or [])
-        summary_paths = [OUTPUT_ROOT / "summaries" / f"{summary_id}.json"]
-        history_dir = OUTPUT_ROOT / "summary_history" / summary_id
+        summary_paths = [root / "summaries" / f"{summary_id}.json"]
+        history_dir = root / "summary_history" / summary_id
         if _redirected(history_dir):
             raise ValueError("缓存中包含重定向目录，已停止删除")
         if history_dir.is_dir() and not history_dir.is_symlink():
@@ -97,13 +104,13 @@ def _cache_candidates(items):
         for url in item.get("images") or []:
             if not isinstance(url, str):
                 continue
-            path = OUTPUT_ROOT / folder / f"v2-{image_cache_key(url)}.jpg"
+            path = root / folder / f"v2-{image_cache_key(url)}.jpg"
             paths.add(path)
             if path.is_file() and not path.is_symlink():
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 image_digests.add(digest)
                 paths.update(path.parent.glob(f"{digest}-strip-*.jpg"))
-    evidence_dir = OUTPUT_ROOT / "xiaohongshu_analysis"
+    evidence_dir = root / "xiaohongshu_analysis"
     if evidence_dir.is_dir() and not evidence_dir.is_symlink():
         for digest in image_digests:
             paths.update(evidence_dir.glob(f"ocr-*-{digest}.json"))
@@ -116,9 +123,7 @@ def _cache_candidates(items):
 
 
 def _validated_files(candidates):
-    root = OUTPUT_ROOT.absolute()
-    if _redirected(root) or root.resolve() != root:
-        raise ValueError("缓存目录不能重定向到项目之外")
+    root = _cache_root()
     files = set()
     for candidate in candidates:
         if not candidate.absolute().is_relative_to(root) or candidate.absolute() == root:

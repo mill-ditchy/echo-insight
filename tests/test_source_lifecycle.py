@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -300,7 +302,7 @@ class SourceLifecycleTests(unittest.TestCase):
         cache = self.write("summaries/xhs_target.json", {"content": "保留简报"})
         original = Path.unlink
         def fail(path, *args, **kwargs):
-            if path == cache:
+            if path.resolve() == cache.resolve():
                 raise OSError("locked cache")
             return original(path, *args, **kwargs)
         with patch.object(Path, "unlink", autospec=True, side_effect=fail):
@@ -343,6 +345,48 @@ class SourceLifecycleTests(unittest.TestCase):
         update_history.record_updates([article(ai_evidence_file=str(outside))])
         self.assertEqual(self.delete().status_code, 200)
         self.assertEqual(outside.read_text(encoding="utf-8"), "private")
+
+    @unittest.skipUnless(os.name == "nt", "Windows short directory names")
+    def test_windows_short_cache_root_is_canonicalized_without_blocking_cleanup(self):
+        import ctypes
+        self.output.mkdir()
+        get_short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        get_short_path.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(self.output), buffer, len(buffer))
+        if not length:
+            self.skipTest("Windows short directory names are unavailable")
+        self.assertLess(length, len(buffer))
+        short_root = Path(buffer.value)
+        if short_root == short_root.resolve():
+            self.skipTest("This filesystem does not generate short directory aliases")
+        first = article()
+        update_history.record_updates([first])
+        cache = self.write("summaries/xhs_target.json", {"content": "目标简报"})
+        unrelated = self.write("summaries/xhs_other.json", {"content": "其他简报"})
+        with patch.object(source_lifecycle, "OUTPUT_ROOT", short_root):
+            response = self.delete()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(cache.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertIsNone(update_history.get_update("xiaohongshu", first["article_id"]))
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory junctions")
+    def test_cache_root_with_junction_ancestor_still_aborts_cleanup(self):
+        update_history.record_updates([article()])
+        cache = self.write("summaries/xhs_target.json", {"content": "保留简报"})
+        alias = self.root / "redirected-cache-parent"
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.root)], capture_output=True)
+        if result.returncode:
+            self.skipTest("Windows directory junctions are unavailable")
+        self.addCleanup(alias.rmdir)
+        self.assertTrue(source_lifecycle._redirected(alias))
+        with patch.object(source_lifecycle, "OUTPUT_ROOT", alias / "output"):
+            response = self.delete()
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertTrue(cache.exists())
+        self.assertIsNotNone(source_manager.get_source("xiaohongshu", UID))
 
     def test_symlink_cache_aborts_before_any_file_is_deleted(self):
         update_history.record_updates([article()])
